@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Theatre Bot - Remote Control</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>🎭 Theatre Bot</h1>
+        <div class="status" id="status">
+          <span class="status-dot disconnected"></span>
+          <span id="status-text">Connecting...</span>
+        </div>
+      </header>
+
+      <main>
+        <!-- Current URL Display -->
+        <section class="current-url">
+          <label for="url-display">Current URL</label>
+          <div class="url-bar">
+            <input
+              type="text"
+              id="url-display"
+              readonly
+              placeholder="Loading..."
+            />
+            <button id="refresh-btn" title="Refresh">🔄</button>
+          </div>
+        </section>
+
+        <!-- Navigation URL (for users with navigate permission) -->
+        <section class="navigate-section" id="navigate-section">
+          <label for="url-input">Navigate to URL</label>
+          <div class="url-bar">
+            <input type="url" id="url-input" placeholder="https://..." />
+            <button id="go-btn">Go</button>
+          </div>
+        </section>
+
+        <!-- Presets -->
+        <section class="presets">
+          <h2>Quick Access</h2>
+          <div class="preset-grid" id="preset-grid">
+            <!-- Populated by JavaScript -->
+          </div>
+        </section>
+
+        <!-- Context-Aware Search -->
+        <section
+          class="search-section"
+          id="search-section"
+          style="display: none"
+        >
+          <label for="search-input" id="search-label">Search</label>
+          <div class="search-bar">
+            <input type="text" id="search-input" placeholder="Search..." />
+            <button id="search-btn">🔍</button>
+          </div>
+        </section>
+
+        <!-- Remote Control -->
+        <section class="remote">
+          <h2>Remote Control</h2>
+
+          <div class="remote-layout">
+            <!-- D-Pad -->
+            <div class="dpad">
+              <button class="dpad-btn up" data-key="ArrowUp" title="Up">
+                ▲
+              </button>
+              <button class="dpad-btn left" data-key="ArrowLeft" title="Left">
+                ◀
+              </button>
+              <button class="dpad-btn center" data-key="Enter" title="Select">
+                OK
+              </button>
+              <button
+                class="dpad-btn right"
+                data-key="ArrowRight"
+                title="Right"
+              >
+                ▶
+              </button>
+              <button class="dpad-btn down" data-key="ArrowDown" title="Down">
+                ▼
+              </button>
+            </div>
+
+            <!-- Side Buttons -->
+            <div class="side-controls">
+              <button class="control-btn back" data-key="Escape" title="Back">
+                ← Back
+              </button>
+              <button
+                class="control-btn"
+                id="back-history-btn"
+                title="Browser Back"
+              >
+                ↩ History
+              </button>
+            </div>
+          </div>
+
+          <!-- Media Controls -->
+          <div class="media-controls">
+            <button class="media-btn" data-key="Space" title="Play/Pause">
+              ⏯️
+            </button>
+            <button class="media-btn" title="Volume Down">🔉</button>
+            <button class="media-btn" title="Volume Up">🔊</button>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <p>Connected to session: <span id="session-info">None</span></p>
+      </footer>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="js/remote.js"></script>
+  </body>
+</html>

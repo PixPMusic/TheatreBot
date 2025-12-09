@@ -1,0 +1,332 @@
+/* ===========================================
+   Theatre Bot - Remote Control Styles
+   =========================================== */
+
+:root {
+  --bg-primary: #0f0f1a;
+  --bg-secondary: #1a1a2e;
+  --bg-tertiary: #252542;
+  --text-primary: #ffffff;
+  --text-secondary: #a0a0b0;
+  --accent: #6366f1;
+  --accent-hover: #7c7ff7;
+  --success: #22c55e;
+  --warning: #eab308;
+  --error: #ef4444;
+  --border-radius: 12px;
+  --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    sans-serif;
+  background: linear-gradient(
+    135deg,
+    var(--bg-primary) 0%,
+    var(--bg-secondary) 100%
+  );
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Header */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+header h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.875rem;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+.status-dot.connected {
+  background: var(--success);
+}
+
+.status-dot.disconnected {
+  background: var(--error);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Sections */
+section {
+  background: var(--bg-secondary);
+  border-radius: var(--border-radius);
+  padding: 16px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+
+section h2 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+section label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* URL Bar */
+.url-bar,
+.search-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.url-bar input,
+.search-bar input {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition: border-color 0.2s;
+}
+
+.url-bar input:focus,
+.search-bar input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.url-bar button,
+.search-bar button {
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.url-bar button:hover,
+.search-bar button:hover {
+  background: var(--accent-hover);
+}
+
+.url-bar button:active,
+.search-bar button:active {
+  transform: scale(0.98);
+}
+
+/* Presets */
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.preset-btn {
+  background: var(--bg-tertiary);
+  border: 2px solid transparent;
+  border-radius: 12px;
+  padding: 16px 12px;
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.preset-btn .icon {
+  font-size: 1.5rem;
+}
+
+.preset-btn:hover {
+  border-color: var(--accent);
+  background: var(--bg-secondary);
+}
+
+.preset-btn.active {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.1);
+}
+
+/* Remote Control */
+.remote-layout {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  justify-content: center;
+}
+
+.dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 56px);
+  grid-template-rows: repeat(3, 56px);
+  gap: 4px;
+}
+
+.dpad-btn {
+  background: var(--bg-tertiary);
+  border: none;
+  border-radius: 12px;
+  color: var(--text-primary);
+  font-size: 1.25rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dpad-btn:hover {
+  background: var(--accent);
+}
+
+.dpad-btn:active {
+  transform: scale(0.95);
+  background: var(--accent-hover);
+}
+
+.dpad-btn.up {
+  grid-column: 2;
+  grid-row: 1;
+}
+.dpad-btn.left {
+  grid-column: 1;
+  grid-row: 2;
+}
+.dpad-btn.center {
+  grid-column: 2;
+  grid-row: 2;
+  background: var(--accent);
+  font-weight: 700;
+}
+.dpad-btn.right {
+  grid-column: 3;
+  grid-row: 2;
+}
+.dpad-btn.down {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.side-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.control-btn {
+  background: var(--bg-tertiary);
+  border: none;
+  border-radius: 12px;
+  padding: 12px 20px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.control-btn:hover {
+  background: var(--accent);
+}
+
+.control-btn:active {
+  transform: scale(0.98);
+}
+
+/* Media Controls */
+.media-controls {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.media-btn {
+  width: 56px;
+  height: 56px;
+  background: var(--bg-tertiary);
+  border: none;
+  border-radius: 50%;
+  font-size: 1.25rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.media-btn:hover {
+  background: var(--accent);
+}
+
+.media-btn:active {
+  transform: scale(0.95);
+}
+
+/* Footer */
+footer {
+  text-align: center;
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+/* Responsive */
+@media (max-width: 400px) {
+  .preset-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .dpad {
+    grid-template-columns: repeat(3, 48px);
+    grid-template-rows: repeat(3, 48px);
+  }
+}
