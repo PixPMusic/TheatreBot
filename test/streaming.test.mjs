@@ -217,21 +217,24 @@ test("beta rejects process errors and playback failures, killing only that captu
     const failed = assert.rejects(pending, /spawn failed/);
     child.emit("error", new Error("spawn failed"));
     await failed;
+    assert.equal(direct.isRunning(), true);
+    child.emit("close", 1, "SIGTERM");
     assert.equal(direct.isRunning(), false);
     assert.equal(child.kills, 1);
     assert.equal(service.getStatus().playing, false);
 });
 
-test("beta stop/restart survives the old process closing late", { timeout: 1000 }, async () => {
+test("beta stop blocks replacement until process exit and old playback cleanup cannot stop a replacement", { timeout: 1000 }, async () => {
     const children = [fakeProcess(), fakeProcess()];
     let spawned = 0;
     const direct = new DirectStreamService(() => children[spawned++]);
     const { service } = harness();
     const first = direct.startStream(service);
     direct.stopStream();
-    const second = direct.startStream(service);
+    await assert.rejects(direct.startStream(service), /Stream already running/);
     await first;
     children[0].emit("close", 1, "SIGTERM");
+    const second = direct.startStream(service);
     await flush();
     assert.equal(direct.isRunning(), true);
     assert.equal(service.getStatus().playing, true);
@@ -283,6 +286,8 @@ test("beta refuses an unjoined voice service and stops the spawned source", asyn
     service.streamStatus.joined = false;
     await assert.rejects(direct.startStream(service), /Not connected/);
     assert.equal(child.kills, 1);
+    assert.equal(direct.isRunning(), true);
+    child.emit("close", 1, "SIGTERM");
     assert.equal(direct.isRunning(), false);
     child.emit("error", new Error("late child error"));
     await flush();

@@ -338,3 +338,11 @@ footer {
 button:disabled, main[inert] { opacity: .5; }
 
 .search-section { display: none; }
+
+/* Explicit claim consent before starting a persistent personal browser. */
+.claim-page { padding-top: 40px; line-height: 1.5; }
+.claim-page h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+.claim-page > p { margin-bottom: 1rem; }
+.claim-page .auth-panel { align-items: stretch; flex-direction: column; }
+.claim-page .auth-panel button { min-height: 44px; padding: .8rem 1rem; font: inherit; }
+.claim-page a:focus-visible, .claim-page button:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 3px; }

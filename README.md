@@ -12,7 +12,8 @@ Very early alpha. Latency is high and the UI is not very user-friendly.
 - 📺 **Live Browser Streaming** - Stream browser content to Discord voice channels
 - 🎮 **Remote Control** - TV-remote style web UI for navigation
 - 🔗 **Smart Presets** - Quick access to YouTube and Plex with context-aware search
-- 🔐 **RBAC** - Discord role-based access control
+- 🔐 **RBAC** - Discord role-based stream access
+- 👤 **Personal browsers** - Mandatory Discord OAuth claims and persistent, isolated profiles per Discord user
 
 ## Setup
 
@@ -33,7 +34,7 @@ npm ci
 # Copy environment config
 cp .env.example .env
 
-# Edit .env with your Discord token
+# Edit .env with your Discord token and required OAuth application credentials
 ```
 
 The v7 streaming library uses the `@lng2004/discord.js-selfbot-v13` client and native WebRTC/DAVE and FFmpeg dependencies. Allow dependency install scripts, including `node-av`, `@lng2004/node-datachannel`, and `zeromq`, in package managers that require approval. Installation needs access to native binary downloads; if a prebuilt binary is unavailable for your platform, follow that package's source-build prerequisites. Do not use `--ignore-scripts`.
@@ -59,34 +60,35 @@ npm test
 
 ## Usage
 
-1. Configure your Discord token in `.env`
-2. Start the bot with `npm run start`
-3. Use Discord commands to join a voice channel
-4. Optionally configure [Discord OAuth web login](docs/DISCORD_OAUTH.md), enable `SERVER_ENABLED`, and sign in to control the stream. Discord commands work without the web UI.
+1. Configure your Discord token, required [Discord OAuth login](docs/DISCORD_OAUTH.md), and guild join grants in `.env`.
+2. Start the bot with `npm run start`. Missing OAuth configuration or `SERVER_ENABLED=false` fails before Discord login.
+3. Join a voice channel and send `!join` (or `!stable`). The reply contains a five-minute claim link; no browser, voice connection, or capture starts yet.
+4. Open that link, sign in as the Discord user who requested the stream, read the screen visibility notice, and choose **Start my browser and stream**. Stay in the same voice channel with current join permission.
+5. Use the remote controls or owner-only `!url`. Your browser screen is visible to channel watchers.
 
 ### Discord Commands
 
 | Command | Behavior |
 | ------- | -------- |
-| `!join` | Default capture: one H264 encode plus real browser audio encoded as Opus in NUT; v7 handles demuxing, WebRTC packetization, and DAVE. |
+| `!join` | Request a login/claim link for default capture: one H264 encode plus real browser audio encoded as Opus in NUT; v7 handles demuxing, WebRTC packetization, and DAVE. |
 | `!beta` | Alias for `!join`, retained for existing commands. |
-| `!stable` | Older capture path: MPEG-2/PCM Matroska, then v7 transcodes to the configured video codec and Opus in NUT. |
-| `!leave` | Stop capture/playback and leave the voice channel. |
-| `!url <url>` / `!goto <url>` | Navigate the streaming browser. |
+| `!stable` | Request a login/claim link for the older capture path: MPEG-2/PCM Matroska, then v7 transcodes to the configured video codec and Opus in NUT. |
+| `!leave` | Cancel a pending claim or stop capture, close the browser and leave voice. Profile data persists. |
+| `!url <url>` / `!goto <url>` | The current owner may navigate their streaming browser while still entitled to join. |
 | `!help` | Show command help. |
 
-Both modes use v7 Go Live playback with stream previews disabled. The default `!join` mode (and its `!beta` alias) always uses H264; the configured dimensions, frame rate, bitrates, and H26x preset still apply. Use `!stable` for the older transcoding path, including configured H265/VP8 output. Use `!leave` before switching modes. The bot automatically leaves an empty channel.
+Both modes use v7 Go Live playback with stream previews disabled. The default `!join` mode (and its `!beta` alias) always uses H264; the configured dimensions, frame rate, bitrates, and H26x preset still apply. Use `!stable` for the older transcoding path, including configured H265/VP8 output. Use `!leave` before switching modes. The bot stops when the owner leaves the requested voice channel, and automatically leaves an empty channel. Competing users or modes cannot start another stream. Leaving, expiration and restart invalidate claim links; logging in or opening a link alone never starts a stream.
 
 ## RBAC Permissions
 
-Discord commands use an optional JSON permissions file. Without a configured file, only server owners and members with Discord Administrator permission can start, stop, or navigate streams. Help remains public. Grants are scoped to the server; stopping or navigating also requires membership in the active stream's voice channel, including for administrators.
+Discord commands use an optional JSON permissions file. Without a configured file, only server owners and members with Discord Administrator permission can request and stop streams. Help remains public. Grants are scoped to the server; stopping requires membership in the active stream's voice channel, including for administrators. Only the OAuth-verified requester owns the browser. Admins and users with control grants can stop it with `!leave` but cannot read its URL/preset/session metadata or operate another user's profile.
 
 | Level | Capabilities |
 | ----- | ------------ |
-| `join` | Start streams with `!join`, `!beta`, or `!stable`; stop sessions you started while you still have join permission. |
+| `join` | Request and claim streams; fully operate, navigate and stop your own browser while entitled to join. |
 | `control` | Stop the active session with `!leave`. |
-| `navigate` | Change the URL with `!url` or `!goto`. |
-| `admin` | Use all three capabilities within the same server and active voice channel. |
+| `navigate` | Legacy policy field retained for compatibility; does not grant access to another owner's browser. |
+| `admin` | Request streams and stop active streams in the same voice channel; does not share personal browsers. |
 
 Copy `permissions.example.json` to `permissions.json`, replace its example guild ID with your server ID, and add role or user IDs to the appropriate arrays. Discord Developer Mode exposes **Copy ID** for servers, roles, and users. Set `PERMISSIONS_FILE=./permissions.json` in `.env`, then restart the bot. IDs must be strings, and each guild entry accepts only `join`, `control`, `navigate`, and `admin` arrays; omitted levels have no grants. A configured file that cannot be read or contains invalid JSON/schema prevents startup with an actionable error. There is no `/permissions` slash command.
 
@@ -101,6 +103,11 @@ With a manual container launch, pass `-v "$PWD/permissions.json:/app/permissions
 
 ## Container Deployment
 
+Optional local Manifest V3 extensions are disabled by default. See
+[browser extension setup](docs/BROWSER_EXTENSIONS.md) for pinned official
+SponsorBlock and optional uBlock Origin Lite assets, read-only mounts, profile
+settings, and the separate YouTube TV support limitation.
+
 > ⚠️ **Note**: Browser capture requires Linux with X11/Xvfb and PulseAudio. Use the container on macOS/Windows. Native dependency installation and live Discord streaming must be verified on the target platform.
 
 ### With Podman/Docker Compose
@@ -108,7 +115,7 @@ With a manual container launch, pass `-v "$PWD/permissions.json:/app/permissions
 ```bash
 # Copy and configure environment
 cp .env.example .env
-# Edit .env with your Discord token
+# Edit .env with your Discord token and required OAuth application credentials
 
 # Build and run
 podman-compose up -d
@@ -127,6 +134,7 @@ podman run -d \
   --name theatre-bot \
   --env-file .env \
   --shm-size=2gb \
+  -v theatrebot-browser-profiles:/var/lib/theatrebot/profiles \
   -p 127.0.0.1:8080:8080 \
   theatre-bot
 ```
@@ -137,8 +145,20 @@ MIT
 
 ## Web control access
 
-The optional web UI requires Discord OAuth configuration and uses the same per-guild permissions as Discord commands. Users must be in the active stream's voice channel. Browser navigation requires `navigate`; keys, search, presets, back, and refresh require `control`. The page shows the permissions granted by the server.
+The web UI and Discord OAuth are required for every stream. Claims force fresh guild role verification through the existing Discord client, with only OAuth `identify` requested. Browser controls and metadata require the exact profile owner, current voice membership and current `join` permission. Owners may use full navigation, keys, search, presets, back and refresh. There is no profile sharing.
 
 Native HTTP listening and Compose port publishing default to loopback. For remote access, put the web UI behind an HTTPS reverse proxy and set the exact public callback in `DISCORD_REDIRECT_URI`; `SERVER_HOST=0.0.0.0` selects the container's listening interface. The supplied Compose file keeps host publishing on loopback.
 
 Explicit browser URLs accept HTTP(S), including private Plex addresses, and reject local files, executable/browser-internal schemes, and embedded credentials. This is a URL policy for a trusted media browser, not isolation from private HTTP services. OAuth sessions last at most eight hours and are cleared on restart/logout. OAuth proves the web user’s identity. The existing Discord connection fetches that user’s guild roles, sharing verified roles for at most 30 seconds across browser logins; voice/session checks run on every action. If Discord verification is delayed, controls stay disabled and retry automatically without extending expired role permissions.
+
+## Persistent browser profiles
+
+`BROWSER_PROFILE_ROOT` is an absolute, dedicated directory outside the application and Docker build context. The default is `/var/lib/theatrebot/profiles`; Compose mounts its named `browser-profiles` volume there. Native Linux operators should create a private directory owned by the bot's OS user and set that path. macOS and Windows hosts must run the Linux container: ownership and process exit verification use Linux `/proc` and are checked before Discord login.
+
+Each validated Discord user ID selects its own `--user-data-dir`, with root and owner directories restricted to mode `0700`. Cookies, login sessions, localStorage, IndexedDB and service workers remain after normal `!leave` and graceful restarts. Existing shared Chrome profiles are never copied. Profiles are private from other bot users; the operator who owns the machine and storage can access them.
+
+Only one browser lease exists across the profile root. Teardown stops and waits for capture, invalidates browser controls, closes Selenium once, and verifies the owned Chrome/ChromeDriver processes exit before releasing the reservation. Failed quit falls back to those owned process identities; it never kills browsers by name. Incomplete cleanup blocks replacement and retains ownership for an authorized `!leave` retry.
+
+After an abrupt supervisor/container crash, lease files may remain and startup fails closed. An operator must establish that the old bot, owned browser/driver and capture processes are gone before removing the root `.theatrebot-browser-lease` and that owner's `.theatrebot-lease` files. Keep all profile data. The bot does not automatically guess that a lease is stale or provide a profile reset UI.
+
+`npm test` covers claim ownership, CSRF/origin checks, replay/cancellation, current membership, startup/teardown races, owner-only controls, private paths and exclusive leases. `test/integration/profile-isolation.mjs` is a separate disposable Linux/Xvfb/PulseAudio fixture for actual Chromium cookie/site-storage isolation, persistence, process/window/audio exit and hung-navigation cancellation. It must not run in the live bot container.

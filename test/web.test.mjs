@@ -15,7 +15,7 @@ const settings = { clientId: "test-app", clientSecret: "fixture-secret", redirec
 const cookieFrom = (response, name) => response.headers.getSetCookie().find(value => value.startsWith(name + "="))?.split(";")[0];
 const json = value => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
 
-async function fixture(t) {
+async function fixture(t, claims) {
     let now = 100000, failToken = false, allowed = true, verificationError, tokenScope = "identify";
     let capabilities = { control: true, navigate: true };
     let identity = "111111111111111111";
@@ -41,7 +41,7 @@ async function fixture(t) {
         sendKey: async key => calls.push(["key", key]), search: async q => calls.push(["search", q]),
         submitSearch: async q => calls.push(["submit", q]), goBack: async () => calls.push(["back"]), refresh: async () => calls.push(["refresh"]),
     };
-    const web = createWebServer(oauth, authorize, controls);
+    const web = createWebServer(oauth, authorize, controls, claims);
     await new Promise(resolve => web.server.listen(0, "127.0.0.1", resolve));
     const base = `http://127.0.0.1:${web.server.address().port}`;
     t.after(() => web.close());
@@ -235,7 +235,7 @@ async function authorizationFixture(t, options = {}) {
     const client = createClient(), streaming = initStreamingService(client);
     t.after(async () => { loadPermissions({}); await logout(); });
     const guildId = "333333333333333333", channelId = "444444444444444444", roleId = "222222222222222222";
-    const active = { id: `${guildId}-${channelId}`, guildId, channelId, startedBy: "999999999999999999" };
+    const active = { id: `${guildId}-${channelId}`, guildId, channelId, startedBy: login.user.id };
     let channel = channelId, current = active, roles = [roleId], fetches = 0;
     const guild = {
         id: guildId, ownerId: "888888888888888888", voiceStates: { cache: new Map([[login.user.id, { channelId }]]) },
@@ -251,7 +251,7 @@ async function authorizationFixture(t, options = {}) {
     client.guilds.cache.set(guildId, guild);
     t.mock.method(streaming, "getStatus", () => ({ joined: true, channelInfo: { guildId, channelId: channel } }));
     t.mock.method(streaming, "getSession", id => id === current.id ? current : undefined);
-    loadPermissions({ [guildId]: { control: [roleId] } });
+    loadPermissions({ [guildId]: { join: [roleId] } });
     const authorize = createAuthorization(f.oauth, { now: f.now, ...options });
     t.after(() => authorize.close());
     return {
@@ -277,7 +277,6 @@ test("client membership proof shares refresh across browser sessions, forces fet
     await tick(); assert.equal(f.fetches(), 1);
     const fetched = f.member(); proof.resolve(fetched);
     assert.ok((await pending).every(view => view.capabilities.control));
-    // The snapshot is independent of subsequent member/cache mutations.
     fetched.roles.cache.clear(); f.roles([]); f.advance(29999);
     assert.equal((await f.authorize(f.browserLogin)).capabilities.control, true);
     assert.equal(f.fetches(), 1);
@@ -410,7 +409,7 @@ test("remote page disables controls for verification delays and its polling can 
         querySelectorAll: () => [element("key-button")], addEventListener() {},
     };
     let accessStatus = 503;
-    const context = createContext({ document, console, fetch: async () => ({ ok: true, json: async () => ({
+    const context = createContext({ document, console, sessionStorage: { getItem: () => null }, fetch: async () => ({ ok: true, json: async () => ({
         authenticated: true, csrf: "fixture-csrf", user: { username: "Reviewer" }, accessStatus,
         accessError: accessStatus === 503 ? "Discord verification is delayed; controls will retry automatically" : "",
         capabilities: { control: accessStatus === 200, navigate: accessStatus === 200 },
@@ -437,4 +436,57 @@ test("users outside the active voice channel are denied before any membership fe
     f.guild.voiceStates.cache.delete(f.browserLogin.user.id);
     await assert.rejects(f.authorize(f.browserLogin), error => error.status === 403);
     assert.equal(f.fetches(), 0);
+});
+
+
+test("claim GET and OAuth callback start nothing; POST requires login, exact origin and CSRF", async t => {
+    let claimed = 0;
+    const f = await fixture(t, { claim: async (_id, login, valid) => { assert.equal(valid(), true); assert.equal(login.user.id, "111111111111111111"); claimed++; } });
+    const id = "a".repeat(64);
+    assert.equal((await fetch(f.base + `/claim/${id}`)).status, 200);
+    assert.equal(claimed, 0);
+    assert.equal((await f.post(`/api/claim/${id}`, undefined)).status, 401);
+    const user = await f.login(); assert.equal(claimed, 0);
+    for (const headers of [{ Origin: "https://foreign.example" }, { "X-CSRF-Token": "wrong" }, { Origin: "" }]) {
+        assert.equal((await f.post(`/api/claim/${id}`, user, {}, headers)).status, 403);
+    }
+    assert.equal(claimed, 0);
+    assert.equal((await f.post(`/api/claim/${id}`, user)).status, 200); assert.equal(claimed, 1);
+});
+
+test("even an administrator cannot read or operate another owner's personal browser", async t => {
+    const f = await authorizationFixture(t);
+    f.active.startedBy = "999999999999999999";
+    f.guild.ownerId = f.browserLogin.user.id;
+    loadPermissions({ [f.guildId]: { admin: [f.browserLogin.user.id] } });
+    await assert.rejects(f.authorize(f.browserLogin), error => error.status === 403);
+    assert.equal(f.fetches(), 0);
+});
+
+test('a wrong-account claim shows a usable sign-out/login path preserving the locator', async () => {
+    const elements = new Map(), calls = [], saved = new Map();
+    const element = key => {
+        if (!elements.has(key)) elements.set(key, { hidden: true, disabled: false, handlers: {}, addEventListener(event, handler) { this.handlers[event] = handler; } });
+        return elements.get(key);
+    };
+    let destination;
+    const claimPath = '/claim/' + 'a'.repeat(64);
+    const context = createContext({
+        document: { getElementById: element },
+        sessionStorage: { setItem: (key, value) => saved.set(key, value) },
+        location: { pathname: claimPath, replace: value => { destination = value; } },
+        fetch: async (url, options) => {
+            calls.push([url, options]);
+            if (url === '/api/auth/session') return { ok: true, json: async () => ({ authenticated: true, csrf: 'test-csrf', user: { username: 'Wrong user' } }) };
+            if (url === '/auth/logout') return { ok: true };
+            return { ok: false, json: async () => ({ error: 'Only the Discord user who requested this stream can claim it' }) };
+        },
+    });
+    runInContext(await readFile(new URL('../public/js/claim.js', import.meta.url), 'utf8'), context);
+    await tick(); await element('claim-start').handlers.click();
+    assert.match(element('claim-message').textContent, /Only the Discord user/);
+    assert.equal(element('claim-switch-account').hidden, false);
+    await element('claim-switch-account').handlers.click();
+    assert.equal(destination, '/auth/login'); assert.equal(saved.get('theatre_claim'), claimPath);
+    assert.equal(calls.at(-1)[1].headers['X-CSRF-Token'], 'test-csrf');
 });

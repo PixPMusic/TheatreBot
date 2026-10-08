@@ -82,13 +82,15 @@ const config = {
     // Chrome/Selenium settings
     browser: {
         display: parseString(process.env.DISPLAY, ":99"),
+        extensionPaths: process.env.BROWSER_EXTENSION_PATHS || "",
         defaultUrl: parseString(process.env.DEFAULT_URL, "https://youtube.com/tv"),
         userAgent: parseString(process.env.USER_AGENT, "Mozilla/5.0 (SMART-TV; LINUX; Tizen 7.0) AppleWebKit/537.36 (KHTML, like Gecko) 94.0.4606.31/7.0 TV Safari/537.36"),
+        profileRoot: parseString(process.env.BROWSER_PROFILE_ROOT, "/var/lib/theatrebot/profiles"),
     },
 
     // Web UI server
     server: {
-        enabled: parseBoolean(process.env.SERVER_ENABLED),
+        enabled: process.env.SERVER_ENABLED === undefined || parseBoolean(process.env.SERVER_ENABLED),
         port: parseInt(process.env.SERVER_PORT, 8080),
         host: parseString(process.env.SERVER_HOST, "127.0.0.1"),
     },

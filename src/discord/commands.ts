@@ -2,13 +2,16 @@ import type { Message, VoiceState, VoiceChannel, StageChannel, GuildMember } fro
 import { getClient } from "./client.js";
 import { getStreamingService } from "./streaming.js";
 import { getBrowserControls } from "../browser/controls.js";
-import { getCaptureService } from "../browser/capture.js";
-import { getDirectStreamService } from "../streaming/direct.js";
 import logger from "../utils/logger.js";
-import { hasPermission, canControlSession, canNavigate } from "../rbac/permissions.js";
+import { hasPermission, canControlSession } from "../rbac/permissions.js";
+import config from "../config.js";
+import { streamClaims } from "../server/claims.js";
+import { WebAccessError, createMemberVerification } from "../server/authorization.js";
+import { validateServerConfiguration } from "../server/index.js";
 import type { Session } from "../types/index.js";
 
 const COMMAND_PREFIX = "!";
+const verifyBrowserOwner = createMemberVerification();
 
 class PermissionDeniedError extends Error {}
 
@@ -100,7 +103,7 @@ export function setupCommands(): void {
             await message.react("✅");
             
         } catch (error) {
-            if (error instanceof PermissionDeniedError) {
+            if (error instanceof PermissionDeniedError || error instanceof WebAccessError) {
                 await message.reply(`❌ ${error.message}`).catch(() => {});
             }
             logger.error(`Command error (${command}):`, error);
@@ -121,96 +124,15 @@ export function setupCommands(): void {
 /**
  * Handle !stable command using the older MPEG-2/PCM capture and transcoding path.
  */
-async function handleStable(message: Message): Promise<void> {
-    const client = getClient();
-    const streamingService = getStreamingService();
-    
-    if (!client || !streamingService) {
-        throw new Error("Bot not fully initialized");
-    }
-
-    const voiceChannel = requireJoinChannel(message);
-
-    const channelName = 'name' in voiceChannel ? voiceChannel.name : 'voice channel';
-    
-    const reservation = streamingService.reserveStartup(message.guild!.id, voiceChannel.id, message.author.id);
-    if (!reservation) {
-        await message.reply(`❌ Already streaming or starting. Use !leave first.`);
-        return;
-    }
-
-    logger.info(`Stable stream requested by ${message.author.tag} for channel ${channelName}`);
-    try {
-        const controls = getBrowserControls();
-        await controls.initialize();
-        if (!streamingService.isStartupCurrent(reservation)) return;
-
-        await streamingService.joinVoice(message.guild!.id, voiceChannel.id, reservation);
-        if (!streamingService.isStartupCurrent(reservation)) return;
-        streamingService.createSession(message.guild!.id, voiceChannel.id, message.author.id);
-
-        const captureService = getCaptureService();
-        const stream = captureService.startCapture();
-        streamingService.startStream(stream, () => captureService.stopCapture()).catch(error => {
-            logger.error("Stable stream error:", error);
-            if (!streamingService.isStartupCurrent(reservation)) return;
-            streamingService.cancelStartup(reservation);
-            message.channel.send(`❌ Stream error: ${error.message}`).catch(() => {});
-        });
-        streamingService.completeStartup(reservation);
-    } catch (error) {
-        if (!streamingService.isStartupCurrent(reservation)) return;
-        streamingService.cancelStartup(reservation);
-        throw error;
-    }
-
-    await message.reply(`📺 Now streaming in **${channelName}** (Stable/Slow Mode)`);
-    logger.info(`Started stable stream in ${channelName}`);
-}
-
-/**
- * Handle !join and its !beta alias with direct H264/Opus capture over v7 WebRTC/DAVE.
- */
-async function handleJoin(message: Message): Promise<void> {
-    const client = getClient();
-    const streamingService = getStreamingService();
-    
-    if (!client || !streamingService) return;
-
-    const voiceChannel = requireJoinChannel(message);
-    const channelName = 'name' in voiceChannel ? voiceChannel.name : 'voice channel';
-
-    const reservation = streamingService.reserveStartup(message.guild!.id, voiceChannel.id, message.author.id);
-    if (!reservation) {
-        await message.reply(`❌ Already streaming or starting. Use !leave first.`);
-        return;
-    }
-
-    try {
-        const controls = getBrowserControls();
-        await controls.initialize();
-        if (!streamingService.isStartupCurrent(reservation)) return;
-
-        await streamingService.joinVoice(message.guild!.id, voiceChannel.id, reservation);
-        if (!streamingService.isStartupCurrent(reservation)) return;
-        streamingService.createSession(message.guild!.id, voiceChannel.id, message.author.id);
-
-        const directStream = getDirectStreamService();
-        directStream.startStream(streamingService).catch(error => {
-            logger.error("Direct stream error:", error);
-            if (!streamingService.isStartupCurrent(reservation)) return;
-            streamingService.cancelStartup(reservation);
-            message.channel.send(`❌ Stream error: ${error.message}`).catch(() => {});
-        });
-        streamingService.completeStartup(reservation);
-    } catch (error) {
-        if (!streamingService.isStartupCurrent(reservation)) return;
-        streamingService.cancelStartup(reservation);
-        throw error;
-    }
-
-    await message.reply(`📺 Now streaming in **${channelName}** (H264 + browser audio)`);
-    logger.info(`Started direct stream in ${channelName}`);
+async function handleStable(message: Message): Promise<void> { await requestClaim(message, "stable"); }
+async function handleJoin(message: Message): Promise<void> { await requestClaim(message, "direct"); }
+async function requestClaim(message: Message, mode: "direct" | "stable"): Promise<void> {
+    const channel = requireJoinChannel(message);
+    try { validateServerConfiguration(); }
+    catch { throw new PermissionDeniedError("Streaming requires the web server and Discord OAuth configuration. Ask the operator to enable SERVER_ENABLED and configure DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_REDIRECT_URI."); }
+    const claim = streamClaims.request(message.guild!.id, channel.id, message.author.id, mode);
+    const link = `${new URL(config.oauth.redirectUri).origin}/claim/${claim.id}`;
+    await message.reply(`Sign in with the Discord account that sent this command, then start your personal browser: ${link}\nThis link expires in five minutes. Your browser screen will be visible to everyone watching the stream.`);
 }
 
 /**
@@ -230,18 +152,7 @@ async function handleLeave(message: Message): Promise<void> {
 
     logger.info(`Leave requested by ${message.author.tag}`);
 
-    // Stop direct capture (the default mode)
-    const directStream = getDirectStreamService();
-    directStream.stopStream();
-
-    // Stop Capture Stream (if stable)
-    // This is handled by streamingService.leaveVoice() -> stopStream()
-    // But we also need to stop the ffmpeg capture process itself
-    const captureService = getCaptureService();
-    captureService.stopCapture();
-
-    // Leave voice
-    streamingService.leaveVoice();
+    await streamClaims.stop();
 
     await message.reply("👋 Left the voice channel");
     logger.info("Left voice channel via command");
@@ -252,8 +163,8 @@ async function handleLeave(message: Message): Promise<void> {
  */
 async function handleUrl(message: Message, args: string[]): Promise<void> {
     const { member, session } = requireActiveSession(message);
-    if (!canNavigate(member, session)) {
-        throw new PermissionDeniedError("You need navigate permission to change the stream URL.");
+    if (session.startedBy !== member.id || !hasPermission(member, "join", session)) {
+        throw new PermissionDeniedError("Only the browser owner with current join permission may change its URL.");
     }
     const url = args.join(" ");
     if (!url) {
@@ -261,6 +172,11 @@ async function handleUrl(message: Message, args: string[]): Promise<void> {
         return;
     }
 
+    const verified = await verifyBrowserOwner(message.author.id, session.guildId, session.channelId);
+    const current = requireActiveSession(message);
+    if (current.session !== session || current.member.id !== session.startedBy || !hasPermission(verified, 'join', session)) {
+        throw new PermissionDeniedError("Your browser session or join permission changed.");
+    }
     const controls = getBrowserControls();
     await controls.navigateTo(url);
     
@@ -274,9 +190,9 @@ async function handleUrl(message: Message, args: string[]): Promise<void> {
 async function handleHelp(message: Message): Promise<void> {
     await message.reply(`
 **Theatre Bot Commands**
-\`!join\` - Join and stream with a single H264 encode and browser audio (default)
+\`!join\` - Request a login/claim link for H264 and browser audio (default)
 \`!beta\` - Alias for \`!join\`
-\`!stable\` - Join using the older MPEG-2/PCM capture and transcoding path
+\`!stable\` - Request a login/claim link for the older MPEG-2/PCM capture path
 \`!leave\` - Leave the voice channel
 \`!url <url>\` - Navigate to a URL
 \`!help\` - Show this help
@@ -292,6 +208,9 @@ async function handleVoiceStateUpdate(oldState: VoiceState, newState: VoiceState
     
     if (!client || !streamingService) return;
 
+    if (oldState.channelId && oldState.channelId !== newState.channelId) {
+        await streamClaims.departing(oldState.id, oldState.guild.id, oldState.channelId);
+    }
     const status = streamingService.getStatus();
     if (!status.joined || !status.channelInfo) return;
 
@@ -309,16 +228,7 @@ async function handleVoiceStateUpdate(oldState: VoiceState, newState: VoiceState
     if (memberCount === 0) {
         logger.info("All users left the voice channel, auto-leaving...");
 
-        // Stop direct stream
-        const directStream = getDirectStreamService();
-        directStream.stopStream();
-        
-        // Stop capture stream
-        const captureService = getCaptureService();
-        captureService.stopCapture();
-
-        // Leave voice
-        streamingService.leaveVoice();
+        await streamClaims.stop();
 
         logger.info("Auto-left voice channel (empty)");
     }
