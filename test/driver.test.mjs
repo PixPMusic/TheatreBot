@@ -170,11 +170,52 @@ test("immediate close cancels a queued startup before building", async t => {
     assert.equal(build.mock.callCount(), 0);
 });
 
-test("failed candidate disposal preserves the startup error and allows retry", async t => {
+test("failed ready disposal rejects queued startup and retains ownership until a retry succeeds", async t => {
+    const disposal = deferred(), retryDisposal = deferred();
+    const failure = new Error("quit failed");
+    let quits = 0;
+    const old = candidate({ quit: () => ++quits === 1 ? disposal.promise : retryDisposal.promise });
+    const replacement = candidate();
+    let builds = 0;
+    const build = t.mock.method(Builder.prototype, "build", () =>
+        Promise.resolve(++builds === 1 ? old : replacement));
+    await initDriver();
+    const close = closeDriver();
+    assert.equal(closeDriver(), close);
+    assert.equal(getDriver(), null);
+    const closed = assert.rejects(close, error => error === failure);
+    const queued = assert.rejects(initDriver(), error => error === failure);
+    await flush();
+    assert.equal(old.quits, 1);
+    disposal.reject(failure);
+    await closed;
+    await queued;
+    assert.equal(getDriver(), null);
+    assert.equal(build.mock.callCount(), 1);
+
+    const restart = initDriver(), otherRestart = initDriver();
+    const retryClose = closeDriver();
+    assert.equal(closeDriver(), retryClose);
+    await flush();
+    assert.equal(old.quits, 2);
+    assert.equal(build.mock.callCount(), 1);
+    assert.equal(getDriver(), null);
+    retryDisposal.resolve();
+    await retryClose;
+    assert.equal(await restart, replacement);
+    assert.equal(await otherRestart, replacement);
+    assert.equal(build.mock.callCount(), 2);
+    assert.equal(old.quits, 2);
+});
+
+test("failed candidate disposal preserves the startup error and blocks replacement until cleanup succeeds", async t => {
     const failure = new Error("navigation failed");
+    const cleanupFailure = new Error("quit failed");
+    const disposal = deferred();
+    let quits = 0;
     const failed = candidate({
         get: async () => { throw failure; },
-        quit: async () => { throw new Error("quit failed"); },
+        quit: () => ++quits <= 3 ? Promise.reject(cleanupFailure) : disposal.promise,
     });
     const replacement = candidate();
     let builds = 0;
@@ -183,5 +224,65 @@ test("failed candidate disposal preserves the startup error and allows retry", a
     await assert.rejects(initDriver(), error => error === failure);
     assert.equal(getDriver(), null);
     assert.equal(failed.quits, 1);
-    assert.equal(await initDriver(), replacement);
+    await assert.rejects(initDriver(), error => error === cleanupFailure);
+    await assert.rejects(closeDriver(), error => error === cleanupFailure);
+    assert.equal(failed.quits, 3);
+    assert.equal(getDriver(), null);
+    assert.equal(build.mock.callCount(), 1);
+
+    const restart = initDriver(), otherRestart = initDriver();
+    await flush();
+    assert.equal(failed.quits, 4);
+    assert.equal(build.mock.callCount(), 1);
+    assert.equal(getDriver(), null);
+    disposal.resolve();
+    assert.equal(await restart, replacement);
+    assert.equal(await otherRestart, replacement);
+    assert.equal(build.mock.callCount(), 2);
+    assert.equal(failed.quits, 4);
+});
+
+test("close retries failed cancelled startup cleanup and retains ownership if that retry fails", async t => {
+    const built = deferred(), retryDisposal = deferred(), finalDisposal = deferred();
+    const cleanupFailure = new Error("candidate cleanup failed");
+    const closeFailure = new Error("close cleanup failed");
+    let quits = 0;
+    const old = candidate({ quit: () => {
+        if (++quits === 1) return Promise.reject(cleanupFailure);
+        return quits === 2 ? retryDisposal.promise : finalDisposal.promise;
+    } });
+    const replacement = candidate();
+    let builds = 0;
+    const build = t.mock.method(Builder.prototype, "build", () =>
+        ++builds === 1 ? built.promise : Promise.resolve(replacement));
+    const startup = initDriver();
+    const cancelled = assert.rejects(startup, /initialization cancelled/);
+    await flush();
+    const close = closeDriver();
+    const closed = assert.rejects(close, error => error === closeFailure);
+    const queued = assert.rejects(initDriver(), error => error === closeFailure);
+    built.resolve(old);
+    await cancelled;
+    await flush();
+    assert.equal(getDriver(), null);
+    assert.deepEqual(old.urls, []);
+    assert.equal(old.quits, 2);
+    assert.equal(build.mock.callCount(), 1);
+    assert.equal(closeDriver(), close);
+    retryDisposal.reject(closeFailure);
+    await closed;
+    await queued;
+
+    const retryClose = closeDriver();
+    assert.equal(closeDriver(), retryClose);
+    const restart = initDriver();
+    await flush();
+    assert.equal(getDriver(), null);
+    assert.equal(old.quits, 3);
+    assert.equal(build.mock.callCount(), 1);
+    finalDisposal.resolve();
+    await retryClose;
+    assert.equal(await restart, replacement);
+    assert.equal(old.quits, 3);
+    assert.equal(build.mock.callCount(), 2);
 });
