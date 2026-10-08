@@ -9,6 +9,16 @@ export interface StreamingDependencies {
     streamer: Streamer;
     prepareStream: typeof prepareStream;
     playStream: typeof playStream;
+    waitForVoice: () => Promise<void>;
+}
+
+/** Opaque ownership token for a command startup and its resulting session. */
+export interface StartupReservation {
+    readonly id: symbol;
+}
+
+interface VoiceJoin {
+    controller: AbortController;
 }
 
 interface StreamRun {
@@ -46,10 +56,16 @@ export class StreamingService {
     private activeStream: StreamRun | null = null;
     private readonly media: Pick<StreamingDependencies, "prepareStream" | "playStream">;
     private sessions: Map<string, Session> = new Map();
+    private startup: StartupReservation | null = null;
+    private starting = false;
+    private pendingSession: Session | undefined;
+    private voiceJoin: VoiceJoin | null = null;
+    private readonly waitForVoice: () => Promise<void>;
 
     /** Create the voice service with production media APIs or supplied test dependencies. */
     constructor(client: Client, dependencies: Partial<StreamingDependencies> = {}) {
         this.streamer = dependencies.streamer ?? new Streamer(client);
+        this.waitForVoice = dependencies.waitForVoice ?? (() => new Promise(resolve => setTimeout(resolve, 2000)));
         this.media = {
             prepareStream: dependencies.prepareStream ?? prepareStream,
             playStream: dependencies.playStream ?? playStream,
@@ -111,45 +127,120 @@ export class StreamingService {
         return session;
     }
 
-    /**
-     * Join a Discord voice channel.
-     */
-    public async joinVoice(guildId: string, channelId: string): Promise<void> {
-        if (this.streamStatus.joined && this.streamStatus.channelInfo?.channelId === channelId) {
-            logger.info(`Already in voice channel ${channelId}`);
-            return;
-        }
-
-        logger.info(`Joining voice channel ${channelId} in guild ${guildId}`);
-        await this.streamer.joinVoice(guildId, channelId);
-        
-        this.streamStatus.joined = true;
-        this.streamStatus.channelInfo = { guildId, channelId };
-        
-        // Wait for voice connection to stabilize
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        if (!this.streamer.voiceConnection) {
-            throw new Error("Failed to establish voice connection");
-        }
-
-        logger.info(`Successfully joined voice channel ${channelId}`);
+    /** Reserve startup before any browser work so competing commands cannot launch capture. */
+    public reserveStartup(guildId: string, channelId: string, userId: string): StartupReservation | null {
+        if (this.startup || this.voiceJoin || this.streamStatus.joined) return null;
+        const reservation = { id: Symbol("startup") };
+        this.startup = reservation;
+        this.starting = true;
+        this.pendingSession = {
+            id: `${guildId}-${channelId}`, guildId, channelId, startedBy: userId,
+            createdAt: new Date(), currentUrl: config.browser.defaultUrl,
+        };
+        return reservation;
     }
 
-    /**
-     * Leave the current voice channel.
-     */
-    public leaveVoice(): void {
-        if (!this.streamStatus.joined) {
-            return;
+    public isStartupCurrent(reservation: StartupReservation): boolean {
+        return this.startup === reservation;
+    }
+
+    /** Metadata for authorizing cancellation without publishing an active session. */
+    public getPendingSession(): Session | undefined {
+        return this.pendingSession;
+    }
+
+    public hasPendingStartup(): boolean {
+        return this.starting || this.voiceJoin !== null;
+    }
+
+    /** Keep ownership for asynchronous playback failures after startup has completed. */
+    public completeStartup(reservation: StartupReservation): void {
+        if (this.isStartupCurrent(reservation)) {
+            this.starting = false;
+            this.pendingSession = undefined;
+        }
+    }
+
+    /** A failed old command must never tear down a replacement session. */
+    public cancelStartup(reservation: StartupReservation): void {
+        if (this.isStartupCurrent(reservation)) this.leaveVoice();
+    }
+
+    /** Join one transport at a time, publishing its state only after stabilization. */
+    public async joinVoice(guildId: string, channelId: string, reservation?: StartupReservation): Promise<void> {
+        if (this.voiceJoin || (this.startup && this.startup !== reservation)) {
+            throw new Error("Voice startup already in progress");
+        }
+        if (reservation && !this.isStartupCurrent(reservation)) throw new Error("Voice startup cancelled");
+        if (this.streamStatus.joined) {
+            if (this.streamStatus.channelInfo?.guildId === guildId && this.streamStatus.channelInfo.channelId === channelId) return;
+            throw new Error("Already connected to a voice channel; leave first");
         }
 
+        const join: VoiceJoin = { controller: new AbortController() };
+        this.voiceJoin = join;
+        const { signal } = join.controller;
+        const cancelled = new Promise<never>((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        cancelled.catch(() => {});
+        const assertOwned = () => {
+            signal.throwIfAborted();
+            if (this.voiceJoin !== join) throw new Error("Voice startup cancelled");
+        };
+        logger.info(`Joining voice channel ${channelId} in guild ${guildId}`);
+        try {
+            // v7 installs connection/listeners synchronously. leaveVoice removes them before
+            // releasing this join's lock; its unresolved promise can only return its old wrapper.
+            const transport = this.streamer.joinVoice(guildId, channelId).then(connection => {
+                if (signal.aborted) connection.close();
+                return connection;
+            });
+            await Promise.race([transport, cancelled]);
+            assertOwned();
+            await Promise.race([this.waitForVoice(), cancelled]);
+            assertOwned();
+            if (!this.streamer.voiceConnection) throw new Error("Failed to establish voice connection");
+            this.streamStatus.joined = true;
+            this.streamStatus.channelInfo = { guildId, channelId };
+            this.voiceJoin = null;
+            logger.info(`Successfully joined voice channel ${channelId}`);
+        } catch (error) {
+            if (this.voiceJoin === join && !signal.aborted) this.disconnectVoice();
+            throw error;
+        }
+    }
+
+    /** Cancel pending startup as well as joined playback, clearing all session state. */
+    public leaveVoice(): void {
+        const cleanupOwner = this.pendingSession ?? this.getAllSessions()[0];
+        this.startup = null;
+        this.starting = false;
+        this.pendingSession = undefined;
+        try {
+            this.disconnectVoice();
+        } catch (error) {
+            // Preserve only authorization metadata while a failed teardown still blocks startup.
+            this.pendingSession = cleanupOwner;
+            throw error;
+        }
+    }
+
+    private disconnectVoice(): void {
+        const join = this.voiceJoin;
         this.stopStream();
-        this.streamer.leaveVoice();
-        
-        this.streamStatus.joined = false;
-        this.streamStatus.channelInfo = null;
-        
+        let disconnected = false;
+        try {
+            if (join || this.streamStatus.joined || this.streamer.voiceConnection) this.streamer.leaveVoice();
+            disconnected = true;
+        } finally {
+            // Keep startup blocked if teardown throws before v7 removes its listeners.
+            this.voiceJoin = disconnected ? null : (join ?? { controller: new AbortController() });
+            join?.controller.abort(new Error("Voice startup cancelled"));
+            this.streamStatus.joined = false;
+            this.streamStatus.channelInfo = null;
+            this.sessions.clear();
+        }
         logger.info("Left voice channel");
     }
 
