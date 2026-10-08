@@ -57,12 +57,8 @@ export class CaptureService {
             "-draw_mouse", "0",
             "-i", `${display}+0,0`,
             
-            // Video input options
-            "-thread_queue_size", "1024", // Prevent buffer underruns
-
             // Audio input: PulseAudio
             "-f", "pulse",
-            "-thread_queue_size", "1024",
             "-i", "default",
             
             // Video encoding - MPEG-2 (Lightweight Intermediate)

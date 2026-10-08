@@ -64,7 +64,7 @@ async function main(): Promise<void> {
     }
 }
 
-// Stop the owning playback run before closing browser/server resources.
+/** Stop owned playback and capture before closing browser/server resources. */
 async function shutdown(signal: string): Promise<void> {
     logger.info(`Received ${signal}, shutting down...`);
     try {

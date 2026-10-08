@@ -16,6 +16,7 @@ interface StreamRun {
     manualStop: boolean;
 }
 
+/** Map configured quality and latency settings onto the v7 encoder API. */
 export function stableStreamOptions(): Partial<PrepareStreamOptions> {
     return {
         width: config.stream.width,
@@ -25,7 +26,9 @@ export function stableStreamOptions(): Partial<PrepareStreamOptions> {
         bitrateVideoMax: config.stream.maxBitrateKbps,
         videoCodec: Utils.normalizeVideoCodec(config.stream.videoCodec),
         hardwareAcceleratedDecoding: config.stream.hardwareAcceleration,
-        minimizeLatency: true,
+        // v7 emits the invalid FFmpeg flag "lowdelay"; preserve latency tuning with "low_delay".
+        minimizeLatency: false,
+        customInputOptions: ["-fflags nobuffer", "-flags low_delay", "-flush_packets 1", "-max_delay 100000"],
         encoder: Encoders.software({
             x264: { preset: config.stream.h26xPreset, tune: "zerolatency" },
             x265: { preset: config.stream.h26xPreset, tune: "zerolatency" },
@@ -44,6 +47,7 @@ export class StreamingService {
     private readonly media: Pick<StreamingDependencies, "prepareStream" | "playStream">;
     private sessions: Map<string, Session> = new Map();
 
+    /** Create the voice service with production media APIs or supplied test dependencies. */
     constructor(client: Client, dependencies: Partial<StreamingDependencies> = {}) {
         this.streamer = dependencies.streamer ?? new Streamer(client);
         this.media = {
@@ -165,6 +169,7 @@ export class StreamingService {
         await this.runStream(() => ({ output, completion }), "nut", stopCapture);
     }
 
+    /** Own producer/playback cancellation and prevent late cleanup from affecting a replacement. */
     private async runStream(
         prepare: (signal: AbortSignal, inputError: (error: Error) => void) => { output: Readable; completion: Promise<unknown> },
         format: PlayStreamOptions["format"],

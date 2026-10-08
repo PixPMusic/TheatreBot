@@ -45,6 +45,8 @@ test("stable config uses v7 encoder settings and NUT playback with previews disa
     const completion = service.startStream("capture.mkv");
     const options = sources[0].options;
     assert.equal(options.frameRate, config.stream.fps);
+    assert.equal(options.minimizeLatency, false);
+    assert.ok(options.customInputOptions.includes("-flags low_delay"));
     assert.equal(options.videoCodec, config.stream.videoCodec);
     for (const codec of ["H264", "H265"]) {
         const encoder = options.encoder(1000, 2000)[codec];

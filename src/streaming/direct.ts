@@ -11,11 +11,10 @@ export function directStreamArguments(): string[] {
     const { width, height, fps, bitrateKbps, maxBitrateKbps, h26xPreset } = config.stream;
     return [
         "-hide_banner", "-loglevel", "warning",
-        "-thread_queue_size", "1024",
         "-f", "x11grab", "-video_size", `${width}x${height}`,
         "-framerate", `${fps}`, "-draw_mouse", "0",
         "-i", `${config.browser.display}+0,0`,
-        "-thread_queue_size", "1024", "-f", "pulse", "-i", "default",
+        "-f", "pulse", "-i", "default",
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "libx264", "-preset", h26xPreset, "-tune", "zerolatency",
         "-b:v", `${bitrateKbps}k`, "-maxrate", `${maxBitrateKbps}k`,
@@ -34,6 +33,7 @@ export class DirectStreamService {
     private ffmpegProcess: ChildProcess | null = null;
     private stopPlayback: (() => void) | null = null;
 
+    /** Allow a supplied process launcher for deterministic capture lifecycle tests. */
     constructor(private readonly spawnProcess: typeof spawn = spawn) {}
 
     /** Resolves at EOF/stop; rejects on capture or playback failure. */
@@ -72,16 +72,19 @@ export class DirectStreamService {
         }
     }
 
+    /** Abort the playback run, which also terminates its owned capture process. */
     public stopStream(): void {
         this.stopPlayback?.();
     }
 
+    /** Report whether this service currently owns a capture process. */
     public isRunning(): boolean {
         return this.ffmpegProcess !== null;
     }
 }
 
 let directStreamService: DirectStreamService | null = null;
+/** Return the shared beta capture service used by Discord commands. */
 export function getDirectStreamService(): DirectStreamService {
     return directStreamService ??= new DirectStreamService();
 }
