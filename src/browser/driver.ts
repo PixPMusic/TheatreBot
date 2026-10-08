@@ -7,6 +7,8 @@ import type { NavigationKey, BrowserAction, Preset, DEFAULT_PRESETS } from "../t
 import { validateNavigationUrl } from "./url.js";
 
 let driver: WebDriver | null = null;
+// Keep ownership until quit succeeds, without exposing an unusable browser.
+let retiringDriver: WebDriver | null = null;
 let initialization: { cancelled: boolean } | null = null;
 let initializing: Promise<WebDriver> | null = null;
 let closing: Promise<void> | null = null;
@@ -98,6 +100,9 @@ export function initDriver(): Promise<WebDriver> {
     if (initializing) {
         return initializing;
     }
+    if (retiringDriver) {
+        return closeDriver().then(() => initDriver());
+    }
 
     const attempt = { cancelled: false };
     initialization = attempt;
@@ -137,8 +142,10 @@ export function initDriver(): Promise<WebDriver> {
             return candidate;
         } catch (error) {
             if (candidate) {
+                retiringDriver = candidate;
                 try {
                     await candidate.quit();
+                    retiringDriver = null;
                 } catch (cleanupError) {
                     logger.error("Failed to close uninitialized Chrome WebDriver:", cleanupError);
                 }
@@ -306,7 +313,7 @@ export function closeDriver(): Promise<void> {
     if (closing) {
         return closing;
     }
-    if (!driver && !initializing) {
+    if (!driver && !initializing && !retiringDriver) {
         return Promise.resolve();
     }
 
@@ -314,15 +321,18 @@ export function closeDriver(): Promise<void> {
         initialization.cancelled = true;
     }
     const pending = initializing;
-    const ready = driver;
+    if (driver) {
+        retiringDriver = driver;
+    }
     driver = null;
     closing = Promise.resolve().then(async () => {
         if (pending) {
-            // Initialization owns disposal of its candidate, including failures.
+            // Initialization attempts cleanup first; retry any retained candidate.
             await pending.catch(() => {});
         }
-        if (ready) {
-            await ready.quit();
+        if (retiringDriver) {
+            await retiringDriver.quit();
+            retiringDriver = null;
             logger.info("Chrome WebDriver closed");
         }
     }).finally(() => {
