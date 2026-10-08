@@ -16,7 +16,13 @@
         </div>
       </header>
 
-      <main>
+      <section class="auth-panel" aria-live="polite">
+        <span id="auth-message">Checking Discord login…</span>
+        <a id="login-link" href="/auth/login">Sign in with Discord</a>
+        <button id="logout-btn" hidden>Sign out</button>
+      </section>
+
+      <main id="controls" inert>
         <!-- Current URL Display -->
         <section class="current-url">
           <label for="url-display">Current URL</label>
@@ -52,7 +58,6 @@
         <section
           class="search-section"
           id="search-section"
-          style="display: none"
         >
           <label for="search-input" id="search-label">Search</label>
           <div class="search-bar">
@@ -120,7 +125,7 @@
       </footer>
     </div>
 
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
     <script src="js/remote.js"></script>
   </body>
 </html>

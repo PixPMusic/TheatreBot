@@ -62,7 +62,7 @@ npm test
 1. Configure your Discord token in `.env`
 2. Start the bot with `npm run start`
 3. Use Discord commands to join a voice channel
-4. Control the browser via the web UI at `http://localhost:8080`
+4. Optionally configure [Discord OAuth web login](docs/DISCORD_OAUTH.md), enable `SERVER_ENABLED`, and sign in to control the stream. Discord commands work without the web UI.
 
 ### Discord Commands
 
@@ -134,3 +134,11 @@ podman run -d \
 ## License
 
 MIT
+
+## Web control access
+
+The optional web UI requires Discord OAuth configuration and uses the same per-guild permissions as Discord commands. Users must be in the active stream's voice channel. Browser navigation requires `navigate`; keys, search, presets, back, and refresh require `control`. The page shows the permissions granted by the server.
+
+Native HTTP listening and Compose port publishing default to loopback. For remote access, put the web UI behind an HTTPS reverse proxy and set the exact public callback in `DISCORD_REDIRECT_URI`; `SERVER_HOST=0.0.0.0` selects the container's listening interface. The supplied Compose file keeps host publishing on loopback.
+
+Explicit browser URLs accept HTTP(S), including private Plex addresses, and reject local files, executable/browser-internal schemes, and embedded credentials. This is a URL policy for a trusted media browser, not isolation from private HTTP services. OAuth sessions last at most eight hours and are cleared on restart/logout. Guild-role membership is cached for at most 30 seconds to avoid a Discord API request for every remote key; voice/session checks run on every action.

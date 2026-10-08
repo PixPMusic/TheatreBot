@@ -4,6 +4,8 @@ import config from "../config.js";
 import logger from "../utils/logger.js";
 import type { NavigationKey, BrowserAction, Preset, DEFAULT_PRESETS } from "../types/index.js";
 
+import { validateNavigationUrl } from "./url.js";
+
 let driver: WebDriver | null = null;
 let initialization: { cancelled: boolean } | null = null;
 let initializing: Promise<WebDriver> | null = null;
@@ -111,6 +113,7 @@ export function initDriver(): Promise<WebDriver> {
             logger.info(`Default URL: ${config.browser.defaultUrl}`);
             logger.info(`User Agent: ${config.browser.userAgent}`);
 
+            const defaultUrl = validateNavigationUrl(config.browser.defaultUrl);
             const options = getChromeOptions();
             const chromedriverPath = process.env.CHROMEDRIVER_PATH || "/usr/lib64/chromium-browser/chromedriver";
             const service = new chrome.ServiceBuilder(chromedriverPath);
@@ -125,7 +128,7 @@ export function initDriver(): Promise<WebDriver> {
             }
             logger.info("Chrome WebDriver built successfully");
 
-            await candidate.get(config.browser.defaultUrl);
+            await candidate.get(defaultUrl);
             if (attempt.cancelled) {
                 throw new Error("WebDriver initialization cancelled by closeDriver");
             }
@@ -166,8 +169,9 @@ export async function navigate(url: string): Promise<void> {
         throw new Error("WebDriver not initialized");
     }
 
-    logger.info(`Navigating to ${url}`);
-    await driver.get(url);
+    const validated = validateNavigationUrl(url);
+    logger.info(`Navigating to ${validated}`);
+    await driver.get(validated);
 }
 
 /**

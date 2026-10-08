@@ -5,7 +5,7 @@ import { initStreamingService, getStreamingService } from "./discord/streaming.j
 import { setupCommands } from "./discord/commands.js";
 import { getBrowserControls } from "./browser/controls.js";
 import { getCaptureService } from "./browser/capture.js";
-import { startServer, stopServer } from "./server/index.js";
+import { startServer, stopServer, validateServerConfiguration } from "./server/index.js";
 import { loadPermissionsFile } from "./rbac/permissions.js";
 
 /**
@@ -28,6 +28,7 @@ async function main(): Promise<void> {
     try {
         // Fail before Discord login if an explicitly configured policy is invalid.
         loadPermissionsFile(config.permissionsFile);
+        validateServerConfiguration();
         // 1. Login to Discord
         await login();
         const client = getClient();
@@ -58,7 +59,7 @@ async function main(): Promise<void> {
         logger.info("  3. Control the browser via the web UI or Discord");
         logger.info("");
         if (config.server.enabled) {
-            logger.info(`Web UI: http://localhost:${config.server.port}`);
+            logger.info(`Web UI: ${new URL(config.oauth.redirectUri).origin}`);
         }
 
     } catch (error) {

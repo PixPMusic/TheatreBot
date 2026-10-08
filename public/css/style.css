@@ -330,3 +330,11 @@ footer {
     grid-template-rows: repeat(3, 48px);
   }
 }
+
+.auth-panel { margin: 1rem 0; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+.auth-panel a { color: #a6c8ff; }
+.auth-panel button { padding: .5rem .8rem; border: 0; border-radius: .5rem; background: #6366f1; color: white; cursor: pointer; }
+[hidden] { display: none !important; }
+button:disabled, main[inert] { opacity: .5; }
+
+.search-section { display: none; }

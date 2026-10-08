@@ -90,6 +90,14 @@ const config = {
     server: {
         enabled: parseBoolean(process.env.SERVER_ENABLED),
         port: parseInt(process.env.SERVER_PORT, 8080),
+        host: parseString(process.env.SERVER_HOST, "127.0.0.1"),
+    },
+
+    // Confidential Discord application credentials for web login
+    oauth: {
+        clientId: parseString(process.env.DISCORD_CLIENT_ID, ""),
+        clientSecret: parseString(process.env.DISCORD_CLIENT_SECRET, ""),
+        redirectUri: parseString(process.env.DISCORD_REDIRECT_URI, ""),
     },
 
     // Presets
