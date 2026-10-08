@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Claim your Theatre browser</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <script src="/js/claim.js" defer></script>
+  </head>
+  <body>
+    <main class="container claim-page">
+      <h1>Start your personal browser</h1>
+      <p>Sign in with the Discord account that requested this stream. Stay in the requested voice channel.</p>
+      <p><strong>Your browser screen will be visible to everyone watching the stream.</strong> Cookies, logins and site storage persist in your own profile when the stream ends. Only you can operate this browser. Close private tabs before starting.</p>
+      <section class="auth-panel" aria-label="Claim your stream">
+        <p id="claim-message" role="status">Checking Discord login…</p>
+        <a id="claim-login" href="/auth/login" hidden>Sign in with Discord</a>
+        <button id="claim-start" type="button" hidden>Start my browser and stream</button>
+        <button id="claim-switch-account" type="button" hidden>Sign out and use a different Discord account</button>
+        <a href="/">Remote controls</a>
+      </section>
+    </main>
+  </body>
+</html>

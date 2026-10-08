@@ -26,3 +26,7 @@ tmp/
 
 # Build artifacts
 *.tsbuildinfo
+
+# Private browser state
+profiles/
+browser-profiles/

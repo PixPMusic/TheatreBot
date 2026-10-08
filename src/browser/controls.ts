@@ -14,8 +14,8 @@ export class BrowserControls {
     /**
      * Initialize the browser with a starting URL.
      */
-    public async initialize(startUrl?: string): Promise<void> {
-        await driverModule.initDriver();
+    public async initialize(ownerId: string, startUrl?: string): Promise<void> {
+        await driverModule.initDriver(ownerId);
         
         if (startUrl) {
             await this.navigateTo(startUrl);
@@ -29,8 +29,9 @@ export class BrowserControls {
      * Navigate to a URL.
      */
     public async navigateTo(url: string): Promise<void> {
-        await driverModule.navigate(url);
-        await this.detectCurrentPreset();
+        const expected = driverModule.getDriver();
+        await driverModule.navigate(url, expected);
+        await this.detectCurrentPreset(expected);
     }
 
     /**
@@ -42,7 +43,9 @@ export class BrowserControls {
             throw new Error(`Unknown preset: ${presetId}`);
         }
 
-        await driverModule.navigate(preset.url);
+        const expected = driverModule.getDriver();
+        await driverModule.navigate(preset.url, expected);
+        driverModule.assertDriver(expected);
         this.currentPreset = preset;
         logger.info(`Navigated to preset: ${preset.name}`);
     }
@@ -78,8 +81,9 @@ export class BrowserControls {
     /**
      * Detect the current preset based on URL.
      */
-    private async detectCurrentPreset(): Promise<void> {
-        const currentUrl = await driverModule.getCurrentUrl();
+    private async detectCurrentPreset(expected = driverModule.getDriver()): Promise<void> {
+        const currentUrl = await driverModule.getCurrentUrl(expected);
+        driverModule.assertDriver(expected);
         
         for (const preset of this.presets) {
             if (currentUrl.includes(new URL(preset.url).hostname)) {
@@ -110,20 +114,21 @@ export class BrowserControls {
      * Search using the current preset's search functionality.
      * This focuses the search input and types the query.
      */
-    public async search(query: string): Promise<void> {
+    public async search(query: string, expected = driverModule.getDriver()): Promise<void> {
+        driverModule.assertDriver(expected);
         if (!this.currentPreset?.searchSelector) {
             // No search selector, just type into the active element
             logger.warn("No search selector for current preset, typing directly");
-            await driverModule.typeText(query);
+            await driverModule.typeText(query, expected);
             return;
         }
 
         try {
-            await driverModule.focusAndType(this.currentPreset.searchSelector, query);
-            logger.info(`Searched for: ${query}`);
+            await driverModule.focusAndType(this.currentPreset.searchSelector, query, expected);
+            logger.debug("Owner browser search completed");
         } catch (error) {
             logger.error(`Failed to use search selector, falling back to direct typing:`, error);
-            await driverModule.typeText(query);
+            await driverModule.typeText(query, expected);
         }
     }
 
@@ -131,8 +136,9 @@ export class BrowserControls {
      * Submit search (press Enter after typing).
      */
     public async submitSearch(query: string): Promise<void> {
-        await this.search(query);
-        await driverModule.sendKey("Enter");
+        const expected = driverModule.getDriver();
+        await this.search(query, expected);
+        await driverModule.sendKey("Enter", expected);
     }
 
     /**
@@ -153,11 +159,12 @@ export class BrowserControls {
      * Execute a browser action.
      */
     public async executeAction(action: BrowserAction): Promise<void> {
-        await driverModule.executeAction(action);
+        const expected = driverModule.getDriver();
+        await driverModule.executeAction(action, expected);
         
         // Re-detect preset if navigation occurred
         if (action.type === "navigate") {
-            await this.detectCurrentPreset();
+            await this.detectCurrentPreset(expected);
         }
     }
 
@@ -168,7 +175,7 @@ export class BrowserControls {
         const driver = driverModule.getDriver();
         if (driver) {
             await driver.navigate().back();
-            await this.detectCurrentPreset();
+            await this.detectCurrentPreset(driver);
         }
     }
 

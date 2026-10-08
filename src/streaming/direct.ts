@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "child_process";
 import type { Readable } from "stream";
 import type { StreamingService } from "../discord/streaming.js";
+import { stopAndWait } from "../browser/child-exit.js";
 import config from "../config.js";
 import logger from "../utils/logger.js";
 
@@ -52,13 +53,13 @@ export class DirectStreamService {
             stopped = true;
             if (process.exitCode === null && process.signalCode === null) process.kill("SIGTERM");
             if (this.ffmpegProcess === process) {
-                this.ffmpegProcess = null;
                 this.stopPlayback = null;
             }
         };
         const completion = new Promise<void>((resolve, reject) => {
             process.once("error", reject);
             process.once("close", (code, signal) => {
+                if (this.ffmpegProcess === process) this.ffmpegProcess = null;
                 if (stopped || code === 0) resolve();
                 else reject(new Error(`FFmpeg capture exited with ${signal ?? code}`));
             });
@@ -75,6 +76,13 @@ export class DirectStreamService {
     }
 
     /** Abort the playback run, which also terminates its owned capture process. */
+    public async stopAndWait(): Promise<void> {
+        const process = this.ffmpegProcess;
+        this.stopStream();
+        await stopAndWait(process);
+        if (this.ffmpegProcess === process) this.ffmpegProcess = null;
+    }
+
     public stopStream(): void {
         this.stopPlayback?.();
     }

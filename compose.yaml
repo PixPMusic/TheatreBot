@@ -5,12 +5,14 @@ services:
       dockerfile: Containerfile
     container_name: theatre-bot
     restart: unless-stopped
+    stop_grace_period: 30s
     
     # Environment from .env file
     env_file:
       - .env
     environment:
       SERVER_HOST: 0.0.0.0
+      BROWSER_PROFILE_ROOT: /var/lib/theatrebot/profiles
     
     # Expose web UI
     ports:
@@ -23,6 +25,9 @@ services:
     security_opt:
       - seccomp:unconfined
     
-    # Optional: Mount config for persistence
-    # volumes:
-    #   - ./data:/app/data
+    # Persistent private browser data stays outside the image/build context.
+    volumes:
+      - browser-profiles:/var/lib/theatrebot/profiles
+
+volumes:
+  browser-profiles:
