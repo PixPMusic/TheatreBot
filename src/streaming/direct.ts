@@ -11,6 +11,8 @@ export function directStreamArguments(): string[] {
     const { width, height, fps, bitrateKbps, maxBitrateKbps, h26xPreset } = config.stream;
     return [
         "-hide_banner", "-loglevel", "warning",
+        // Bound startup analysis and minimize buffering on the live video input.
+        "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer",
         "-f", "x11grab", "-video_size", `${width}x${height}`,
         "-framerate", `${fps}`, "-draw_mouse", "0",
         "-i", `${config.browser.display}+0,0`,
