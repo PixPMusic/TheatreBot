@@ -1,4 +1,4 @@
-import type { Message, VoiceState, VoiceChannel, StageChannel, GuildMember } from "discord.js-selfbot-v13";
+import type { Message, VoiceState, VoiceChannel, StageChannel } from "@lng2004/discord.js-selfbot-v13";
 import { getClient } from "./client.js";
 import { getStreamingService } from "./streaming.js";
 import { getBrowserControls } from "../browser/controls.js";
@@ -68,7 +68,7 @@ export function setupCommands(): void {
     });
 
     logger.info("Discord commands initialized");
-    logger.info("Commands: !join, !leave, !url <url>, !help");
+    logger.info("Commands: !join, !beta, !leave, !url <url>, !help");
 }
 
 import { getCaptureService } from "../browser/capture.js";
@@ -129,7 +129,7 @@ async function handleJoin(message: Message): Promise<void> {
     const stream = captureService.startCapture();
 
     // Pipe to Discord - Do NOT await this as it blocks until stream ends
-    streamingService.startStream(stream).catch(e => {
+    streamingService.startStream(stream, () => captureService.stopCapture()).catch(e => {
         logger.error("Stable stream error:", e);
         // Only try to reply if message is recent enough, otherwise just log
         message.channel.send(`❌ Stream error: ${e.message}`).catch(() => {});
@@ -141,7 +141,7 @@ async function handleJoin(message: Message): Promise<void> {
 
 /**
  * Handle !beta command - experimental direct streaming.
- * Uses DirectStreamService (Raw H.264 -> UDP).
+ * Uses DirectStreamService (H264 + Opus NUT -> v7 WebRTC/DAVE).
  */
 async function handleBeta(message: Message): Promise<void> {
     const client = getClient();
@@ -175,14 +175,14 @@ async function handleBeta(message: Message): Promise<void> {
     // Create session
     streamingService.createSession(message.guild!.id, voiceChannel.id, message.author.id);
 
-    // Get MediaUdp
-    const mediaUdp = await streamingService.createMediaUdp();
-
-    // Start Direct Stream
+    // Playback runs until EOF/stop, so observe failures without blocking !leave.
     const directStream = getDirectStreamService();
-    await directStream.startStream(mediaUdp);
+    directStream.startStream(streamingService).catch(error => {
+        logger.error("Beta stream error:", error);
+        message.channel.send(`❌ Stream error: ${error.message}`).catch(() => {});
+    });
 
-    await message.reply(`🧪 Beta Stream started in **${channelName}** (Direct RTP v3)`);
+    await message.reply(`🧪 Beta stream started in **${channelName}** (H264 + browser audio)`);
     logger.info(`Started beta stream in ${channelName}`);
 }
 
@@ -252,7 +252,8 @@ async function handleUrl(message: Message, args: string[]): Promise<void> {
 async function handleHelp(message: Message): Promise<void> {
     await message.reply(`
 **Theatre Bot Commands**
-\`!join\` - Join your voice channel and start streaming
+\`!join\` - Join your voice channel and start stable streaming
+\`!beta\` - Join and stream with a single H264 encode and browser audio
 \`!leave\` - Leave the voice channel
 \`!url <url>\` - Navigate to a URL
 \`!help\` - Show this help

@@ -1,7 +1,7 @@
 import config from "./config.js";
 import logger from "./utils/logger.js";
 import { login, getClient } from "./discord/client.js";
-import { initStreamingService } from "./discord/streaming.js";
+import { initStreamingService, getStreamingService } from "./discord/streaming.js";
 import { setupCommands } from "./discord/commands.js";
 import { getBrowserControls } from "./browser/controls.js";
 import { getCaptureService } from "./browser/capture.js";
@@ -64,29 +64,22 @@ async function main(): Promise<void> {
     }
 }
 
-// Graceful shutdown
-process.on("SIGINT", async () => {
-    logger.info("Shutting down...");
-    
+// Stop the owning playback run before closing browser/server resources.
+async function shutdown(signal: string): Promise<void> {
+    logger.info(`Received ${signal}, shutting down...`);
     try {
+        getStreamingService()?.cleanup();
+        getCaptureService().stopCapture();
         await stopServer();
-        
-        const controls = getBrowserControls();
-        await controls.close();
-        
-        const capture = getCaptureService();
-        capture.stopCapture();
+        await getBrowserControls().close();
     } catch (error) {
         logger.error("Error during shutdown:", error);
     }
-    
     process.exit(0);
-});
+}
 
-process.on("SIGTERM", async () => {
-    logger.info("Received SIGTERM, shutting down...");
-    process.exit(0);
-});
+process.on("SIGINT", () => { void shutdown("SIGINT"); });
+process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
 
 process.on("uncaughtException", (error) => {
     logger.error("Uncaught exception:", error);

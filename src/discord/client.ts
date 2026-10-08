@@ -1,4 +1,4 @@
-import { Client } from "discord.js-selfbot-v13";
+import { Client } from "@lng2004/discord.js-selfbot-v13";
 import config from "../config.js";
 import logger from "../utils/logger.js";
 

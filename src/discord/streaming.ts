@@ -1,9 +1,37 @@
-import { Client } from "discord.js-selfbot-v13";
-import { Streamer, Utils, prepareStream, playStream, type MediaUdp } from "@dank074/discord-video-stream";
+import { Client } from "@lng2004/discord.js-selfbot-v13";
+import { Streamer, Utils, Encoders, prepareStream, playStream, type PrepareStreamOptions, type PlayStreamOptions } from "@dank074/discord-video-stream";
 import type { Readable } from "stream";
 import config from "../config.js";
 import logger from "../utils/logger.js";
-import type { StreamStatus, ChannelInfo, Session } from "../types/index.js";
+import type { StreamStatus, Session } from "../types/index.js";
+
+export interface StreamingDependencies {
+    streamer: Streamer;
+    prepareStream: typeof prepareStream;
+    playStream: typeof playStream;
+}
+
+interface StreamRun {
+    controller: AbortController;
+    manualStop: boolean;
+}
+
+export function stableStreamOptions(): Partial<PrepareStreamOptions> {
+    return {
+        width: config.stream.width,
+        height: config.stream.height,
+        frameRate: config.stream.fps,
+        bitrateVideo: config.stream.bitrateKbps,
+        bitrateVideoMax: config.stream.maxBitrateKbps,
+        videoCodec: Utils.normalizeVideoCodec(config.stream.videoCodec),
+        hardwareAcceleratedDecoding: config.stream.hardwareAcceleration,
+        minimizeLatency: true,
+        encoder: Encoders.software({
+            x264: { preset: config.stream.h26xPreset, tune: "zerolatency" },
+            x265: { preset: config.stream.h26xPreset, tune: "zerolatency" },
+        }),
+    };
+}
 
 /**
  * StreamingService manages Discord voice connections and video streaming.
@@ -12,11 +40,16 @@ import type { StreamStatus, ChannelInfo, Session } from "../types/index.js";
 export class StreamingService {
     private streamer: Streamer;
     private streamStatus: StreamStatus;
-    private controller: AbortController | null = null;
+    private activeStream: StreamRun | null = null;
+    private readonly media: Pick<StreamingDependencies, "prepareStream" | "playStream">;
     private sessions: Map<string, Session> = new Map();
 
-    constructor(client: Client) {
-        this.streamer = new Streamer(client);
+    constructor(client: Client, dependencies: Partial<StreamingDependencies> = {}) {
+        this.streamer = dependencies.streamer ?? new Streamer(client);
+        this.media = {
+            prepareStream: dependencies.prepareStream ?? prepareStream,
+            playStream: dependencies.playStream ?? playStream,
+        };
         this.streamStatus = {
             joined: false,
             playing: false,
@@ -116,98 +149,118 @@ export class StreamingService {
         logger.info("Left voice channel");
     }
 
-    /**
-     * Create the MediaUdp connection for direct streaming.
-     * This is used for direct frame sending without library re-encoding.
-     */
-    public async createMediaUdp(): Promise<MediaUdp> {
-        if (!this.streamStatus.joined) {
-            throw new Error("Not connected to a voice channel");
-        }
-
-        const mediaUdp = await this.streamer.createStream();
-        this.streamStatus.playing = true;
-        
-        return mediaUdp;
+    /** Transcode the stable MPEG-2/PCM capture to v7's NUT output. */
+    public async startStream(inputSource: string | Readable, stopCapture: () => void = () => {}): Promise<void> {
+        await this.runStream((signal, inputError) => {
+            if (typeof inputSource !== "string") {
+                inputSource.on("error", inputError);
+            }
+            const { output, promise } = this.media.prepareStream(inputSource, stableStreamOptions(), signal);
+            return { output, completion: promise };
+        }, "nut", stopCapture);
     }
 
-    /**
-     * Start streaming from an ffmpeg input source.
-     * The input should be a file path, URL, or pipe that ffmpeg can read.
-     */
-    public async startStream(inputSource: string | Readable): Promise<void> {
+    /** Play pre-encoded H264/Opus capture without another video encode. */
+    public async startEncodedStream(output: Readable, completion: Promise<unknown>, stopCapture: () => void): Promise<void> {
+        await this.runStream(() => ({ output, completion }), "nut", stopCapture);
+    }
+
+    private async runStream(
+        prepare: (signal: AbortSignal, inputError: (error: Error) => void) => { output: Readable; completion: Promise<unknown> },
+        format: PlayStreamOptions["format"],
+        stopCapture: () => void,
+    ): Promise<void> {
         if (!this.streamStatus.joined) {
+            stopCapture();
             throw new Error("Not connected to a voice channel");
         }
-
-        if (this.streamStatus.playing) {
-            logger.warn("Stream already playing, stopping first");
-            this.stopStream();
-        }
-
+        this.stopStream();
+        const run: StreamRun = { controller: new AbortController(), manualStop: false };
+        const { signal } = run.controller;
+        this.activeStream = run;
         this.streamStatus.playing = true;
         this.streamStatus.manualStop = false;
-        this.controller = new AbortController();
 
-        const streamOptions = {
-            width: config.stream.width,
-            height: config.stream.height,
-            frameRate: config.stream.fps,
-            bitrateVideo: config.stream.bitrateKbps,
-            bitrateVideoMax: config.stream.maxBitrateKbps,
-            videoCodec: Utils.normalizeVideoCodec(config.stream.videoCodec),
-            hardwareAcceleratedDecoding: config.stream.hardwareAcceleration,
-            minimizeLatency: true,
-            h26xPreset: config.stream.h26xPreset,
-            // Ultra low latency options
-            rtcpSenderReportEnabled: true,
-            readAtNativeFps: true,
-            forceChacha20Encryption: false,
+        let output: Readable | undefined;
+        let cleaned = false;
+        const cleanup = () => {
+            if (cleaned) return;
+            cleaned = true;
+            output?.destroy();
+            stopCapture();
+            if (this.activeStream === run) this.streamer.stopStream();
         };
-
-        logger.info(`Starting stream with options: ${JSON.stringify(streamOptions)}`);
-
+        const aborted = new Promise<never>((_, reject) => {
+            signal.addEventListener("abort", () => {
+                cleanup();
+                reject(signal.reason);
+            }, { once: true });
+        });
+        // Observe abort even if prepareStream throws synchronously.
+        aborted.catch(() => {});
+        const fail = (error: unknown): never => {
+            run.controller.abort(error);
+            throw error;
+        };
+        const inputError = (error: Error) => run.controller.abort(error);
         try {
-            const { command, output } = prepareStream(inputSource, streamOptions, this.controller.signal);
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (command as any).on("error", (err: Error, _stdout: string, stderr: string) => {
-                if (!this.streamStatus.manualStop && this.controller && !this.controller.signal.aborted) {
-                    logger.error("FFmpeg error:", err.message);
-                    if (stderr) {
-                        logger.error("FFmpeg stderr:", stderr);
-                    }
-                    this.controller.abort();
-                }
+            const prepared = prepare(signal, inputError);
+            output = prepared.output;
+            output.on("error", inputError);
+            const producer = prepared.completion.catch(fail);
+            producer.catch(() => {});
+            // v7 can wait in demux/createStream before attaching its abort handler.
+            // Guard creation and cleanup so a stopped run cannot start/stop a later run.
+            const guardedStreamer = new Proxy(this.streamer, {
+                get: (target, property) => {
+                    if (property === "createStream") return async () => {
+                        signal.throwIfAborted();
+                        const creation = target.createStream().then(conn => {
+                            if (signal.aborted) {
+                                conn.close();
+                                signal.throwIfAborted();
+                            }
+                            return conn;
+                        });
+                        return await Promise.race([creation, aborted]);
+                    };
+                    if (property === "stopStream") return () => {
+                        if (this.activeStream === run) target.stopStream();
+                    };
+                    const value = Reflect.get(target, property, target);
+                    return typeof value === "function" ? value.bind(target) : value;
+                },
             });
-
-            await playStream(output, this.streamer, undefined, this.controller.signal);
-
-            if (!this.streamStatus.manualStop) {
-                logger.info("Stream ended naturally");
-            }
+            const playback = this.media.playStream(output, guardedStreamer, {
+                type: "go-live", format, streamPreview: false,
+            }, signal).catch(fail);
+            await Promise.race([Promise.all([playback, producer]), aborted]);
+            logger.info("Stream ended naturally");
         } catch (error) {
-            if (!this.streamStatus.manualStop) {
+            if (!run.manualStop) {
                 logger.error("Stream error:", error);
+                throw error;
             }
         } finally {
-            this.streamStatus.playing = false;
+            cleanup();
+            run.controller.abort();
+            // Keep the error observer attached to a destroyed source until any late error arrives.
+            if (this.activeStream === run) {
+                this.activeStream = null;
+                this.streamStatus.playing = false;
+            }
         }
     }
 
-    /**
-     * Stop the current stream.
-     */
+    /** Stop the producer and playback belonging to the current run. */
     public stopStream(): void {
-        if (!this.streamStatus.playing) {
-            return;
-        }
-
+        const run = this.activeStream;
+        if (!run) return;
+        run.manualStop = true;
         this.streamStatus.manualStop = true;
-        this.controller?.abort();
-        this.streamer.stopStream();
+        run.controller.abort();
+        this.activeStream = null;
         this.streamStatus.playing = false;
-
         logger.info("Stream stopped");
     }
 
