@@ -13,7 +13,7 @@ const KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"
 type Controls = Pick<BrowserControls, "getCurrentUrl" | "getCurrentPreset" | "getPresets" | "navigateTo" | "navigateToPreset" | "sendKey" | "search" | "submitSearch" | "goBack" | "refresh">;
 
 /** Create an isolated HTTP/Socket.IO instance with the same gates for both transports. */
-export function createWebServer(oauth: OAuthService, authorize: (session: WebSession) => Promise<AuthorizedView>, controls: Controls) {
+export function createWebServer(oauth: OAuthService, authorize: ((session: WebSession) => Promise<AuthorizedView>) & { close?: () => void }, controls: Controls) {
     const app = express();
     const server = createServer(app);
     const trustedRequest = (req: IncomingMessage): boolean => {
@@ -37,6 +37,7 @@ export function createWebServer(oauth: OAuthService, authorize: (session: WebSes
     });
     app.use(express.json({ limit: "16kb" }));
     const error = (res: Response, cause: unknown) => {
+        if (cause instanceof WebAccessError && cause.retryAfter) res.set("Retry-After", String(cause.retryAfter));
         res.status(cause instanceof WebAccessError ? cause.status : 503)
             .json({ error: cause instanceof WebAccessError ? cause.message : "Unable to complete this action; retry or sign in again" });
     };
@@ -67,11 +68,17 @@ export function createWebServer(oauth: OAuthService, authorize: (session: WebSes
         if (!session) { res.json({ authenticated: false }); return; }
         let access: AuthorizedView | undefined;
         let accessError = "";
+        let accessStatus = 200;
+        let retryAfter: number | undefined;
         try { access = await authorize(session); }
-        catch (cause) { accessError = cause instanceof WebAccessError ? cause.message : "Unable to verify access"; }
+        catch (cause) {
+            accessError = cause instanceof WebAccessError ? cause.message : "Unable to verify access";
+            accessStatus = cause instanceof WebAccessError ? cause.status : 503;
+            retryAfter = cause instanceof WebAccessError ? cause.retryAfter : undefined;
+        }
         if (!oauth.valid(session)) { res.json({ authenticated: false }); return; }
         res.json({ authenticated: true, user: session.user, csrf: session.csrf,
-            capabilities: access?.capabilities ?? { control: false, navigate: false }, accessError });
+            capabilities: access?.capabilities ?? { control: false, navigate: false }, accessError, accessStatus, retryAfter });
     });
     app.get("/api/status", async (req, res) => {
         try {
@@ -179,5 +186,8 @@ export function createWebServer(oauth: OAuthService, authorize: (session: WebSes
         }
     });
     app.use(express.static(fileURLToPath(new URL("../../public", import.meta.url))));
-    return { server, io, close: () => new Promise<void>(resolve => io.close(() => { oauth.close(); resolve(); })) };
+    return { server, io, close: () => {
+        authorize.close?.();
+        return new Promise<void>(resolve => io.close(() => { oauth.close(); resolve(); }));
+    } };
 }

@@ -89,7 +89,9 @@ async function updateAccess() {
         if (controls.inert) {
             if (socket) { socket.disconnect(); socket = null; }
             urlDisplay.value = ''; sessionInfo.textContent = 'None';
-            statusText.textContent = 'Permission required';
+            statusText.textContent = data.accessStatus === 503 ? 'Verification delayed' : 'Permission required';
+            statusDot.classList.remove('connected');
+            statusDot.classList.add('disconnected');
             return;
         }
         if (!socket) connectSocket();

@@ -16,7 +16,8 @@ export function validateServerConfiguration(): void {
 export async function startServer(): Promise<void> {
     if (active) return;
     const oauth = new OAuthService(config.oauth);
-    const instance = createWebServer(oauth, createAuthorization(oauth), getBrowserControls());
+    const authorize = createAuthorization(oauth);
+    const instance = createWebServer(oauth, authorize, getBrowserControls());
     active = instance;
     try {
         await new Promise<void>((resolve, reject) => {
@@ -29,6 +30,7 @@ export async function startServer(): Promise<void> {
         logger.info(`Web UI server running at ${oauth.origin}`);
     } catch (error) {
         active = null;
+        authorize.close();
         await instance.close();
         throw error;
     }

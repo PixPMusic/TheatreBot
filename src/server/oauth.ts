@@ -22,9 +22,6 @@ export interface WebSession {
     csrf: string;
 }
 
-interface Membership { roles: string[]; }
-interface CachedMembership { expiresAt: number; value: Membership; }
-
 function nonce(): string { return randomBytes(32).toString("hex"); }
 
 function cookie(req: Pick<Request, "headers">, name: string): string | undefined {
@@ -52,8 +49,6 @@ export class OAuthService {
     private readonly usedStates = new Map<string, number>();
     private readonly pendingStates = new Set<string>();
     private readonly loginTimes = new Map<string, number[]>();
-    private readonly memberships = new Map<string, CachedMembership>();
-    private readonly pendingMemberships = new Map<string, Promise<Membership>>();
 
     constructor(
         private readonly settings: OAuthSettings,
@@ -84,7 +79,6 @@ export class OAuthService {
             if (recent.length) this.loginTimes.set(user, recent); else this.loginTimes.delete(user);
         }
         for (const [id, session] of this.sessions) if (session.expiresAt <= now) this.removeSession(id);
-        for (const [key, entry] of this.memberships) if (entry.expiresAt <= now) this.memberships.delete(key);
     }
 
     private setCookie(res: Response, name: string, value: string, maxAge: number, path = "/"): void {
@@ -109,7 +103,7 @@ export class OAuthService {
         const response = await this.request(`${API}${path}`, {
             headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10_000),
         });
-        if (!response.ok) throw new Error("Discord identity or membership verification failed");
+        if (!response.ok) throw new Error("Discord identity verification failed");
         return response.json();
     }
 
@@ -194,7 +188,6 @@ export class OAuthService {
 
     private removeSession(id: string): void {
         this.sessions.delete(id);
-        for (const key of this.memberships.keys()) if (key.startsWith(`${id}:`)) this.memberships.delete(key);
     }
 
     public logout(req: Request, res: Response): void {
@@ -203,36 +196,11 @@ export class OAuthService {
         this.setCookie(res, this.sessionCookie, "", 0);
     }
 
-    /** Cache proven roles for at most 30 seconds; voice/session checks still run on every action. */
-    public async membership(session: WebSession, guildId: string): Promise<Membership> {
-        if (!this.valid(session) || !/^\d{1,20}$/.test(guildId)) throw new Error("Sign in again");
-        const key = `${session.id}:${guildId}`;
-        const cached = this.memberships.get(key);
-        if (cached && cached.expiresAt > this.now()) return cached.value;
-        let pending = this.pendingMemberships.get(key);
-        if (!pending) {
-            pending = this.discord(`/users/@me/guilds/${guildId}/member`, session.accessToken).then(raw => {
-                const member = raw as Record<string, unknown>;
-                if (!Array.isArray(member.roles) || !member.roles.every(role => typeof role === "string" && /^\d{1,20}$/.test(role))) {
-                    throw new Error("Discord returned invalid membership roles");
-                }
-                const value = { roles: member.roles as string[] };
-                if (this.valid(session)) this.memberships.set(key, { value, expiresAt: this.now() + 30_000 });
-                return value;
-            }).finally(() => this.pendingMemberships.delete(key));
-            this.pendingMemberships.set(key, pending);
-        }
-        const member = await pending;
-        if (!this.valid(session)) throw new Error("Sign in again");
-        return member;
-    }
-
     public close(): void {
         this.stateKey = randomBytes(32);
         this.sessions.clear();
         this.usedStates.clear();
         this.pendingStates.clear();
         this.loginTimes.clear();
-        this.memberships.clear();
     }
 }
