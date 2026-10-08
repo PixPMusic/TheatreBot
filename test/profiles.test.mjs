@@ -47,3 +47,61 @@ test('profiles cannot be configured inside the build context or at shared filesy
     await assert.rejects(acquireProfile(process.cwd() + '/profiles', OWNER), /outside the application/);
     await assert.rejects(acquireProfile('/', OWNER), /dedicated private directory/);
 });
+
+test('startup preparation creates a missing private root without creating profiles or leases', async t => {
+    const { prepareProfileRoot } = await import('../dist/browser/profiles.js');
+    const { readdir } = await import('node:fs/promises');
+    const parent = await fixture(t), root = path.join(parent, 'missing', 'profiles');
+    assert.equal(await prepareProfileRoot(root), root);
+    assert.equal((await lstat(root)).mode & 0o777, 0o700);
+    assert.deepEqual(await readdir(root), []);
+});
+
+test('preparation preserves existing profile data and exclusive lease files while cleaning its probe', async t => {
+    const { prepareProfileRoot } = await import('../dist/browser/profiles.js');
+    const { readdir } = await import('node:fs/promises');
+    const root = await fixture(t), lease = await acquireProfile(root, OWNER);
+    await writeFile(path.join(lease.directory, 'site-data'), 'keep');
+    const rootLease = await readFile(path.join(root, '.theatrebot-browser-lease'), 'utf8');
+    const ownerLease = await readFile(path.join(lease.directory, '.theatrebot-lease'), 'utf8');
+    await prepareProfileRoot(root);
+    assert.equal(await readFile(path.join(lease.directory, 'site-data'), 'utf8'), 'keep');
+    assert.equal(await readFile(path.join(root, '.theatrebot-browser-lease'), 'utf8'), rootLease);
+    assert.equal(await readFile(path.join(lease.directory, '.theatrebot-lease'), 'utf8'), ownerLease);
+    assert.deepEqual((await readdir(root)).filter(name => name.startsWith('.theatrebot-write-probe-')), []);
+    await lease.release();
+});
+
+test('read-only probe failure produces an actionable startup error and leaves no probe', async t => {
+    const { prepareProfileRoot } = await import('../dist/browser/profiles.js');
+    const fs = (await import('node:fs/promises')).default;
+    const root = await fixture(t);
+    t.mock.method(fs, 'open', async () => { throw Object.assign(new Error('read-only filesystem'), { code: 'EROFS' }); });
+    await assert.rejects(prepareProfileRoot(root), error => /BROWSER_PROFILE_ROOT/.test(error.message) && /read-only/.test(error.message) && /writable persistent storage/.test(error.message));
+    assert.deepEqual(await fs.readdir(root), []);
+});
+
+test('a failed probe write closes its handle and removes only its own temporary file', async t => {
+    const { prepareProfileRoot } = await import('../dist/browser/profiles.js');
+    const fs = (await import('node:fs/promises')).default;
+    const root = await fixture(t), originalOpen = fs.open.bind(fs);
+    await writeFile(path.join(root, 'existing-data'), 'keep');
+    let opened;
+    t.mock.method(fs, 'open', async (...args) => {
+        opened = await originalOpen(...args);
+        t.mock.method(opened, 'writeFile', async () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); });
+        return opened;
+    });
+    await assert.rejects(prepareProfileRoot(root), /BROWSER_PROFILE_ROOT.*disk full/);
+    assert.equal(opened.fd, -1);
+    assert.deepEqual(await fs.readdir(root), ['existing-data']);
+    assert.equal(await readFile(path.join(root, 'existing-data'), 'utf8'), 'keep');
+});
+
+for (const ancestor of [false, true]) test(`startup preparation rejects a symlinked ${ancestor ? 'ancestor' : 'root'} before any probe`, async t => {
+    const { prepareProfileRoot } = await import('../dist/browser/profiles.js');
+    const { readdir } = await import('node:fs/promises');
+    const root = await fixture(t); await mkdir(path.join(root, 'target')); await symlink(path.join(root, 'target'), path.join(root, 'alias'));
+    await assert.rejects(prepareProfileRoot(path.join(root, 'alias', ...(ancestor ? ['profiles'] : []))), /BROWSER_PROFILE_ROOT.*symlinks/);
+    assert.deepEqual(await readdir(path.join(root, 'target')), []);
+});

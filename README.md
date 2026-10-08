@@ -132,6 +132,7 @@ podman build -t theatre-bot .
 # Run
 podman run -d \
   --name theatre-bot \
+  --stop-timeout 30 \
   --env-file .env \
   --shm-size=2gb \
   -v theatrebot-browser-profiles:/var/lib/theatrebot/profiles \
@@ -153,11 +154,13 @@ Explicit browser URLs accept HTTP(S), including private Plex addresses, and reje
 
 ## Persistent browser profiles
 
-`BROWSER_PROFILE_ROOT` is an absolute, dedicated directory outside the application and Docker build context. The default is `/var/lib/theatrebot/profiles`; Compose mounts its named `browser-profiles` volume there. Native Linux operators should create a private directory owned by the bot's OS user and set that path. macOS and Windows hosts must run the Linux container: ownership and process exit verification use Linux `/proc` and are checked before Discord login.
+`BROWSER_PROFILE_ROOT` is an absolute, dedicated directory outside the application and Docker build context. The default is `/var/lib/theatrebot/profiles`; Compose mounts its named `browser-profiles` volume there. Native Linux operators should configure a private directory owned by the bot's OS user on writable storage. Before Discord login, startup creates the root if needed, restricts it to `0700`, rejects symlinked paths and verifies private temporary-file creation/removal. An unwritable root fails with an actionable `BROWSER_PROFILE_ROOT` error. macOS and Windows hosts must run the Linux container: ownership and process exit verification use Linux `/proc` and are checked before Discord login.
 
 Each validated Discord user ID selects its own `--user-data-dir`, with root and owner directories restricted to mode `0700`. Cookies, login sessions, localStorage, IndexedDB and service workers remain after normal `!leave` and graceful restarts. Existing shared Chrome profiles are never copied. Profiles are private from other bot users; the operator who owns the machine and storage can access them.
 
 Only one browser lease exists across the profile root. Teardown stops and waits for capture, invalidates browser controls, closes Selenium once, and verifies the owned Chrome/ChromeDriver processes exit before releasing the reservation. Failed quit falls back to those owned process identities; it never kills browsers by name. Incomplete cleanup blocks replacement and retains ownership for an authorized `!leave` retry.
+
+Compose gives graceful shutdown 30 seconds; manual Docker/Podman launches should use `--stop-timeout 30` as in the example above. Cleanup can wait up to five seconds for capture, ten seconds for Selenium quit and four seconds for owned process termination before releasing leases. Allow this window for routine stops and upgrades.
 
 After an abrupt supervisor/container crash, lease files may remain and startup fails closed. An operator must establish that the old bot, owned browser/driver and capture processes are gone before removing the root `.theatrebot-browser-lease` and that owner's `.theatrebot-lease` files. Keep all profile data. The bot does not automatically guess that a lease is stale or provide a profile reset UI.
 
