@@ -16,13 +16,13 @@ const cookieFrom = (response, name) => response.headers.getSetCookie().find(valu
 const json = value => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
 
 async function fixture(t) {
-    let now = 100000, failToken = false, allowed = true, verificationError;
+    let now = 100000, failToken = false, allowed = true, verificationError, tokenScope = "identify";
     let capabilities = { control: true, navigate: true };
     let identity = "111111111111111111";
     const calls = [], requests = [];
     const provider = async (url, options) => {
         requests.push([url, options]);
-        if (url.endsWith("/oauth2/token")) return failToken ? new Response("", { status: 400 }) : json({ access_token: "fixture-access", expires_in: 3600, scope: "identify guilds.members.read" });
+        if (url.endsWith("/oauth2/token")) return failToken ? new Response("", { status: 400 }) : json({ access_token: "fixture-access", refresh_token: "fixture-refresh", expires_in: 3600, scope: tokenScope });
         if (url.endsWith("/users/@me")) return json({ id: identity, username: "Reviewer" });
         throw new Error(`Unexpected OAuth provider request: ${url}`);
     };
@@ -50,7 +50,7 @@ async function fixture(t) {
         assert.equal(response.status, 302);
         const target = new URL(response.headers.get("location"));
         assert.equal(target.origin, "https://discord.com");
-        assert.equal(target.searchParams.get("scope"), "identify guilds.members.read");
+        assert.equal(target.searchParams.get("scope"), "identify");
         return { state: target.searchParams.get("state"), cookie: cookieFrom(response, "theatre_oauth_state") };
     };
     const finish = async ({ state, cookie }) => fetch(base + `/auth/callback?code=fixture-code&state=${state}`, { headers: { Cookie: cookie }, redirect: "manual" });
@@ -66,7 +66,7 @@ async function fixture(t) {
     });
     const socket = user => io(base, { transports: ["websocket"], reconnection: false, auth: { csrf: user.csrf }, extraHeaders: { Cookie: user.cookie, Origin: oauth.origin } });
     return { oauth, web, base, calls, requests, begin, finish, login, post, socket,
-        now: () => now, verificationError: value => { verificationError = value; },
+        now: () => now, verificationError: value => { verificationError = value; }, tokenScope: value => { tokenScope = value; },
         advance: ms => { now += ms; }, deny: () => { allowed = false; }, allow: () => { allowed = true; },
         identity: value => { identity = value; },
         capabilities: value => { capabilities = value; }, failToken: () => { failToken = true; } };
@@ -89,6 +89,21 @@ test("OAuth refuses incomplete/insecure deployment configuration", () => {
     assert.equal(cookies[0][2].path, "/");
     assert.equal(cookies[0][2].secure, true);
     assert.equal(cookies[0][2].httpOnly, true);
+});
+
+test("OAuth requires only identity scope and stores no bearer or refresh tokens in web sessions", async t => {
+    const f = await fixture(t), user = await f.login();
+    const session = f.oauth.session({ headers: { cookie: user.cookie } });
+    assert.equal(session.user.id, "111111111111111111");
+    assert.equal(session.expiresAt, f.now() + 3600000);
+    assert.equal(Object.hasOwn(session, "accessToken"), false);
+    assert.equal(Object.hasOwn(session, "refreshToken"), false);
+    assert.doesNotMatch(JSON.stringify(session), /fixture-access|fixture-refresh/);
+    assert.equal(f.requests.filter(([url]) => url.endsWith("/users/@me")).length, 1);
+    f.tokenScope("guilds.members.read");
+    assert.equal((await f.finish(await f.begin())).status, 400);
+    assert.equal(f.requests.filter(([url]) => url.endsWith("/users/@me")).length, 1,
+        "a grant without identify must fail before identity lookup");
 });
 
 test("browser-bound OAuth state is single use, expires, and never exchanges an invalid callback", async t => {

@@ -4,7 +4,7 @@ import type { Request, Response } from "express";
 const API = "https://discord.com/api/v10";
 const SESSION_COOKIE = "theatre_session";
 const STATE_COOKIE = "theatre_oauth_state";
-const SCOPES = ["identify", "guilds.members.read"];
+const SCOPES = ["identify"];
 const STATE_LIFETIME = 5 * 60_000;
 const SESSION_LIFETIME = 8 * 60 * 60_000;
 
@@ -17,7 +17,6 @@ export interface OAuthSettings {
 export interface WebSession {
     id: string;
     user: { id: string; username: string };
-    accessToken: string;
     expiresAt: number;
     csrf: string;
 }
@@ -141,7 +140,7 @@ export class OAuthService {
             if (typeof token.access_token !== "string" || !token.access_token ||
                 typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0 ||
                 typeof token.scope !== "string" || !SCOPES.every(scope => (token.scope as string).split(" ").includes(scope))) {
-                throw new Error("Discord login did not grant the required identity and membership scopes");
+                throw new Error("Discord login did not grant the required identity scope");
             }
             const user = await this.discord("/users/@me", token.access_token) as Record<string, unknown>;
             if (typeof user.id !== "string" || !/^\d{1,20}$/.test(user.id) || typeof user.username !== "string") {
@@ -159,7 +158,7 @@ export class OAuthService {
             while (this.sessions.size >= 1000) this.removeSession(this.sessions.keys().next().value!);
             const lifetime = Math.min(token.expires_in * 1000, SESSION_LIFETIME);
             const session: WebSession = {
-                id: nonce(), user: { id: user.id, username: user.username }, accessToken: token.access_token,
+                id: nonce(), user: { id: user.id, username: user.username },
                 csrf: nonce(), expiresAt: this.now() + lifetime,
             };
             const previous = cookie(req, this.sessionCookie);
