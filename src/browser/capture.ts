@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "child_process";
 import { Readable } from "stream";
+import { stopAndWait } from "./child-exit.js";
 import config from "../config.js";
 import logger from "../utils/logger.js";
 
@@ -28,6 +29,7 @@ export class CaptureService {
      * Returns a Readable stream that can be passed directly to discord-video-stream.
      */
     public startCapture(): Readable {
+        if (this.ffmpegProcess && !this.isCapturing) throw new Error("Capture process is still stopping");
         if (this.isCapturing && this.outputStream) {
             return this.outputStream;
         }
@@ -129,6 +131,13 @@ export class CaptureService {
     /**
      * Stop the capture.
      */
+    public async stopAndWait(): Promise<void> {
+        const process = this.ffmpegProcess;
+        this.stopCapture();
+        await stopAndWait(process);
+        if (this.ffmpegProcess === process) this.ffmpegProcess = null;
+    }
+
     public stopCapture(): void {
         if (!this.isCapturing) {
             return;
@@ -138,7 +147,6 @@ export class CaptureService {
 
         if (this.ffmpegProcess) {
             this.ffmpegProcess.kill("SIGTERM");
-            this.ffmpegProcess = null;
         }
         
         this.outputStream?.destroy();

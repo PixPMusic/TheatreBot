@@ -212,6 +212,14 @@ export class StreamingService {
     }
 
     /** Cancel pending startup as well as joined playback, clearing all session state. */
+    public beginTeardown(): void {
+        this.pendingSession ??= this.getAllSessions()[0];
+        this.sessions.clear();
+        this.stopStream();
+        this.streamStatus.joined = false;
+        this.streamStatus.channelInfo = null;
+    }
+
     public leaveVoice(): void {
         const cleanupOwner = this.pendingSession ?? this.getAllSessions()[0];
         this.startup = null;

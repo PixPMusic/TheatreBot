@@ -6,3 +6,8 @@ dist
 !.env.example
 *.log
 .DS_Store
+
+# Browser state must never enter an image
+profiles
+browser-profiles
+data
