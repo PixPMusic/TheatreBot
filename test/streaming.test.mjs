@@ -287,3 +287,179 @@ test("beta refuses an unjoined voice service and stops the spawned source", asyn
     child.emit("error", new Error("late child error"));
     await flush();
 });
+
+
+function voiceHarness() {
+    const joins = [];
+    const settles = [];
+    const streamer = {
+        voiceConnection: undefined, leaves: 0, stops: 0,
+        joinVoice(guild, channel) {
+            const completion = deferred();
+            const wrapper = { closes: 0, close() { this.closes++; } };
+            const connection = { guild, channel, wrapper };
+            this.voiceConnection = connection;
+            joins.push({ completion, connection, wrapper });
+            return completion.promise;
+        },
+        stopStream() { this.stops++; },
+        leaveVoice() {
+            this.leaves++;
+            this.voiceConnection?.wrapper.close();
+            this.voiceConnection = undefined;
+        },
+    };
+    const service = new StreamingService(null, {
+        streamer,
+        waitForVoice: () => {
+            const wait = deferred();
+            settles.push(wait);
+            return wait.promise;
+        },
+    });
+    return { service, streamer, joins, settles };
+}
+
+test("voice joins reject overlap, including the same channel, and publish only after stabilization", async () => {
+    const { service, streamer, joins, settles } = voiceHarness();
+    const first = service.joinVoice("guild", "voice");
+    await assert.rejects(service.joinVoice("guild", "voice"), /already in progress/);
+    await assert.rejects(service.joinVoice("guild", "other"), /already in progress/);
+    assert.equal(joins.length, 1);
+    assert.equal(service.getStatus().joined, false);
+    assert.equal(service.getStatus().channelInfo, null);
+    joins[0].completion.resolve(joins[0].wrapper);
+    await flush();
+    assert.equal(service.getStatus().joined, false);
+    settles[0].resolve();
+    await first;
+    assert.equal(service.getStatus().joined, true);
+    assert.deepEqual(service.getStatus().channelInfo, { guildId: "guild", channelId: "voice" });
+    await service.joinVoice("guild", "voice");
+    await assert.rejects(service.joinVoice("other-guild", "voice"), /leave first/);
+    assert.equal(joins.length, 1);
+    service.createSession("guild", "voice", "user");
+    service.leaveVoice();
+    assert.equal(streamer.leaves, 1);
+    assert.deepEqual(service.getAllSessions(), []);
+});
+
+for (const result of ["fulfill", "reject"]) {
+    test(`leave while transport joins releases startup and isolates late ${result}`, { timeout: 1000 }, async () => {
+        const { service, streamer, joins, settles } = voiceHarness();
+        const reservation = service.reserveStartup("guild", "voice", "user");
+        const first = service.joinVoice("guild", "voice", reservation);
+        const cancelled = assert.rejects(first, /cancelled/);
+        service.leaveVoice();
+        await cancelled;
+        assert.equal(streamer.leaves, 1);
+        assert.equal(joins[0].wrapper.closes, 1);
+        assert.equal(service.getPendingSession(), undefined);
+        assert.equal(service.getStatus().joined, false);
+        const replacement = service.reserveStartup("guild", "other", "other-user");
+        const next = service.joinVoice("guild", "other", replacement);
+        assert.equal(joins.length, 2);
+        if (result === "fulfill") joins[0].completion.resolve(joins[0].wrapper);
+        else joins[0].completion.reject(new Error("old join failed"));
+        await flush();
+        assert.equal(streamer.leaves, 1);
+        assert.equal(streamer.voiceConnection, joins[1].connection);
+        assert.equal(joins[1].wrapper.closes, 0);
+        assert.equal(service.isStartupCurrent(replacement), true);
+        assert.equal(service.getPendingSession().startedBy, "other-user");
+        assert.equal(settles.length, 0);
+        joins[1].completion.resolve(joins[1].wrapper);
+        await flush();
+        settles[0].resolve();
+        await next;
+        service.createSession("guild", "other", "other-user");
+        service.completeStartup(replacement);
+        assert.equal(service.hasPendingStartup(), false);
+        assert.equal(service.getPendingSession(), undefined);
+        service.cancelStartup(reservation);
+        assert.equal(service.getStatus().joined, true);
+        assert.equal(service.getAllSessions().length, 1);
+        service.cleanup();
+    });
+}
+
+test("cleanup during stabilization settles immediately and old timer cannot overwrite a replacement", { timeout: 1000 }, async () => {
+    const { service, streamer, joins, settles } = voiceHarness();
+    const first = service.joinVoice("guild", "voice");
+    const cancelled = assert.rejects(first, /cancelled/);
+    joins[0].completion.resolve(joins[0].wrapper);
+    await flush();
+    assert.equal(settles.length, 1);
+    service.cleanup();
+    await cancelled;
+    const next = service.joinVoice("guild", "replacement");
+    joins[1].completion.resolve(joins[1].wrapper);
+    await flush();
+    settles[1].resolve();
+    await next;
+    settles[0].resolve();
+    await flush();
+    assert.equal(streamer.leaves, 1);
+    assert.deepEqual(service.getStatus().channelInfo, { guildId: "guild", channelId: "replacement" });
+    service.leaveVoice();
+});
+
+for (const failure of ["transport", "missing-connection", "stabilization"]) {
+    test(`${failure} failure tears down transport and clears stale session state`, async () => {
+        const { service, streamer, joins, settles } = voiceHarness();
+        service.createSession("old", "old", "user");
+        const pending = service.joinVoice("guild", "voice");
+        const failed = assert.rejects(pending, /failed|establish/);
+        if (failure === "transport") joins[0].completion.reject(new Error("transport failed"));
+        else {
+            joins[0].completion.resolve(joins[0].wrapper);
+            await flush();
+            if (failure === "missing-connection") {
+                streamer.voiceConnection = undefined;
+                settles[0].resolve();
+            } else settles[0].reject(new Error("stabilization failed"));
+        }
+        await failed;
+        assert.equal(streamer.leaves, 1);
+        assert.equal(service.getStatus().joined, false);
+        assert.equal(service.hasPendingStartup(), false);
+        assert.deepEqual(service.getAllSessions(), []);
+        assert.ok(service.reserveStartup("guild", "voice", "user"));
+        service.cleanup();
+    });
+}
+
+test("failed synchronous teardown blocks replacement until teardown succeeds", async () => {
+    const { service, streamer } = voiceHarness();
+    const reservation = service.reserveStartup("guild", "voice", "user");
+    const first = service.joinVoice("guild", "voice", reservation);
+    const cancelled = assert.rejects(first, /cancelled/);
+    const leaveVoice = streamer.leaveVoice.bind(streamer);
+    streamer.leaveVoice = () => { throw new Error("teardown failed"); };
+    assert.throws(() => service.leaveVoice(), /teardown failed/);
+    await cancelled;
+    assert.equal(service.reserveStartup("guild", "other", "user"), null);
+    assert.equal(service.getPendingSession().startedBy, "user");
+    await assert.rejects(service.joinVoice("guild", "other"), /already in progress/);
+    streamer.leaveVoice = leaveVoice;
+    service.leaveVoice();
+    assert.equal(service.getPendingSession(), undefined);
+    assert.ok(service.reserveStartup("guild", "other", "user"));
+    service.cleanup();
+});
+
+
+test("cleanup cancels browser reservation and rejects its old token without touching a replacement", async () => {
+    const { service, joins } = voiceHarness();
+    const old = service.reserveStartup("guild", "voice", "user");
+    service.cleanup();
+    const replacement = service.reserveStartup("guild", "other", "other-user");
+    await assert.rejects(service.joinVoice("guild", "voice", old), /already in progress|cancelled/);
+    service.completeStartup(old);
+    service.cancelStartup(old);
+    assert.equal(joins.length, 0);
+    assert.equal(service.hasPendingStartup(), true);
+    assert.equal(service.isStartupCurrent(replacement), true);
+    assert.equal(service.getPendingSession().startedBy, "other-user");
+    service.cleanup();
+});

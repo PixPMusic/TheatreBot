@@ -2,6 +2,7 @@ import type { Message, VoiceState, VoiceChannel, StageChannel } from "@lng2004/d
 import { getClient } from "./client.js";
 import { getStreamingService } from "./streaming.js";
 import { getBrowserControls } from "../browser/controls.js";
+import { getCaptureService } from "../browser/capture.js";
 import { getDirectStreamService } from "../streaming/direct.js";
 import logger from "../utils/logger.js";
 
@@ -72,10 +73,6 @@ export function setupCommands(): void {
     logger.info("Commands: !join, !beta (alias), !stable, !leave, !url <url>, !help");
 }
 
-import { getCaptureService } from "../browser/capture.js";
-
-// ... existing imports
-
 /**
  * Handle !stable command using the older MPEG-2/PCM capture and transcoding path.
  */
@@ -102,38 +99,36 @@ async function handleStable(message: Message): Promise<void> {
 
     const channelName = 'name' in voiceChannel ? voiceChannel.name : 'voice channel';
     
-    // Check if already streaming
-    const status = streamingService.getStatus();
-    if (status.joined) {
-        await message.reply(`❌ Already streaming in another channel. Use !leave first.`);
+    const reservation = streamingService.reserveStartup(message.guild!.id, voiceChannel.id, message.author.id);
+    if (!reservation) {
+        await message.reply(`❌ Already streaming or starting. Use !leave first.`);
         return;
     }
 
     logger.info(`Stable stream requested by ${message.author.tag} for channel ${channelName}`);
+    try {
+        const controls = getBrowserControls();
+        await controls.initialize();
+        if (!streamingService.isStartupCurrent(reservation)) return;
 
-    // Create session and join
-    const session = streamingService.createSession(
-        message.guild!.id,
-        voiceChannel.id,
-        message.author.id
-    );
+        await streamingService.joinVoice(message.guild!.id, voiceChannel.id, reservation);
+        if (!streamingService.isStartupCurrent(reservation)) return;
+        streamingService.createSession(message.guild!.id, voiceChannel.id, message.author.id);
 
-    // Initialize browser
-    const controls = getBrowserControls();
-    await controls.initialize();
-
-    await streamingService.joinVoice(message.guild!.id, voiceChannel.id);
-
-    // Start CaptureService (Stable)
-    const captureService = getCaptureService();
-    const stream = captureService.startCapture();
-
-    // Pipe to Discord - Do NOT await this as it blocks until stream ends
-    streamingService.startStream(stream, () => captureService.stopCapture()).catch(e => {
-        logger.error("Stable stream error:", e);
-        // Only try to reply if message is recent enough, otherwise just log
-        message.channel.send(`❌ Stream error: ${e.message}`).catch(() => {});
-    });
+        const captureService = getCaptureService();
+        const stream = captureService.startCapture();
+        streamingService.startStream(stream, () => captureService.stopCapture()).catch(error => {
+            logger.error("Stable stream error:", error);
+            if (!streamingService.isStartupCurrent(reservation)) return;
+            streamingService.cancelStartup(reservation);
+            message.channel.send(`❌ Stream error: ${error.message}`).catch(() => {});
+        });
+        streamingService.completeStartup(reservation);
+    } catch (error) {
+        if (!streamingService.isStartupCurrent(reservation)) return;
+        streamingService.cancelStartup(reservation);
+        throw error;
+    }
 
     await message.reply(`📺 Now streaming in **${channelName}** (Stable/Slow Mode)`);
     logger.info(`Started stable stream in ${channelName}`);
@@ -157,28 +152,34 @@ async function handleJoin(message: Message): Promise<void> {
     const voiceChannel = member.voice.channel;
     const channelName = 'name' in voiceChannel ? voiceChannel.name : 'voice channel';
 
-    // Check if already streaming
-    const status = streamingService.getStatus();
-    if (status.joined) {
-        await message.reply(`❌ Already streaming. Use !leave first.`);
+    const reservation = streamingService.reserveStartup(message.guild!.id, voiceChannel.id, message.author.id);
+    if (!reservation) {
+        await message.reply(`❌ Already streaming or starting. Use !leave first.`);
         return;
     }
 
-    // Prepare the browser before joining so a startup failure leaves the command retryable.
-    const controls = getBrowserControls();
-    await controls.initialize();
+    try {
+        const controls = getBrowserControls();
+        await controls.initialize();
+        if (!streamingService.isStartupCurrent(reservation)) return;
 
-    await streamingService.joinVoice(message.guild!.id, voiceChannel.id);
+        await streamingService.joinVoice(message.guild!.id, voiceChannel.id, reservation);
+        if (!streamingService.isStartupCurrent(reservation)) return;
+        streamingService.createSession(message.guild!.id, voiceChannel.id, message.author.id);
 
-    // Create session
-    streamingService.createSession(message.guild!.id, voiceChannel.id, message.author.id);
-
-    // Playback runs until EOF/stop, so observe failures without blocking !leave.
-    const directStream = getDirectStreamService();
-    directStream.startStream(streamingService).catch(error => {
-        logger.error("Direct stream error:", error);
-        message.channel.send(`❌ Stream error: ${error.message}`).catch(() => {});
-    });
+        const directStream = getDirectStreamService();
+        directStream.startStream(streamingService).catch(error => {
+            logger.error("Direct stream error:", error);
+            if (!streamingService.isStartupCurrent(reservation)) return;
+            streamingService.cancelStartup(reservation);
+            message.channel.send(`❌ Stream error: ${error.message}`).catch(() => {});
+        });
+        streamingService.completeStartup(reservation);
+    } catch (error) {
+        if (!streamingService.isStartupCurrent(reservation)) return;
+        streamingService.cancelStartup(reservation);
+        throw error;
+    }
 
     await message.reply(`📺 Now streaming in **${channelName}** (H264 + browser audio)`);
     logger.info(`Started direct stream in ${channelName}`);
@@ -195,7 +196,7 @@ async function handleLeave(message: Message): Promise<void> {
     }
 
     const status = streamingService.getStatus();
-    if (!status.joined) {
+    if (!status.joined && !streamingService.hasPendingStartup()) {
         await message.reply("❌ Not currently in a voice channel");
         return;
     }
