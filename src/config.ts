@@ -65,6 +65,8 @@ const config = {
     // Discord self-bot token
     token: process.env.TOKEN || "",
 
+    permissionsFile: parseString(process.env.PERMISSIONS_FILE, ""),
+
     // Stream settings
     stream: {
         width: parseInt(process.env.STREAM_WIDTH, 1280),

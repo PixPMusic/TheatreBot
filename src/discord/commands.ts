@@ -1,12 +1,54 @@
-import type { Message, VoiceState, VoiceChannel, StageChannel } from "@lng2004/discord.js-selfbot-v13";
+import type { Message, VoiceState, VoiceChannel, StageChannel, GuildMember } from "@lng2004/discord.js-selfbot-v13";
 import { getClient } from "./client.js";
 import { getStreamingService } from "./streaming.js";
 import { getBrowserControls } from "../browser/controls.js";
 import { getCaptureService } from "../browser/capture.js";
 import { getDirectStreamService } from "../streaming/direct.js";
 import logger from "../utils/logger.js";
+import { hasPermission, canControlSession, canNavigate } from "../rbac/permissions.js";
+import type { Session } from "../types/index.js";
 
 const COMMAND_PREFIX = "!";
+
+class PermissionDeniedError extends Error {}
+
+function requireMember(message: Message): GuildMember {
+    const member = message.member;
+    if (!message.guild || !member || member.id !== message.author.id || member.guild.id !== message.guild.id) {
+        throw new PermissionDeniedError("Your membership in this server could not be verified.");
+    }
+    return member;
+}
+
+function requireJoinChannel(message: Message) {
+    const member = requireMember(message);
+    const channel = member.voice.channel;
+    if (!channel || !("guild" in channel) || member.voice.channelId !== channel.id || channel.guild.id !== message.guild!.id) {
+        throw new PermissionDeniedError("You must be in a voice channel in this server first.");
+    }
+    if (!hasPermission(member, "join")) {
+        throw new PermissionDeniedError("You need join permission to start a stream.");
+    }
+    return channel;
+}
+
+function requireActiveSession(message: Message, allowPending = false): { member: GuildMember; session: Session } {
+    const member = requireMember(message);
+    const service = getStreamingService();
+    const status = service?.getStatus();
+    // Pending metadata also survives a failed teardown so an authorized caller can retry !leave.
+    const pending = !status?.joined && allowPending ? service?.getPendingSession() : undefined;
+    const channel = status?.joined ? status.channelInfo : pending;
+    const session = pending ?? (channel ? service?.getSession(`${channel.guildId}-${channel.channelId}`) : undefined);
+    if (!channel || !session || session.guildId !== channel.guildId
+        || session.channelId !== channel.channelId || session.id !== `${channel.guildId}-${channel.channelId}`) {
+        throw new PermissionDeniedError("No active streaming session is available.");
+    }
+    if (member.guild.id !== channel.guildId || member.voice.channelId !== channel.channelId) {
+        throw new PermissionDeniedError("You must be in the active stream's voice channel in this server.");
+    }
+    return { member, session };
+}
 
 /**
  * Setup message command handlers.
@@ -58,6 +100,9 @@ export function setupCommands(): void {
             await message.react("✅");
             
         } catch (error) {
+            if (error instanceof PermissionDeniedError) {
+                await message.reply(`❌ ${error.message}`).catch(() => {});
+            }
             logger.error(`Command error (${command}):`, error);
             // Add error reaction
             await message.react("❌").catch(() => {});
@@ -84,18 +129,7 @@ async function handleStable(message: Message): Promise<void> {
         throw new Error("Bot not fully initialized");
     }
 
-    // Get the sender's guild member
-    const member = message.member;
-    if (!member) {
-        throw new Error("Could not find member in guild");
-    }
-
-    // Check if sender is in a voice channel
-    const voiceChannel = member.voice.channel;
-    if (!voiceChannel) {
-        await message.reply("❌ You must be in a voice channel first");
-        return;
-    }
+    const voiceChannel = requireJoinChannel(message);
 
     const channelName = 'name' in voiceChannel ? voiceChannel.name : 'voice channel';
     
@@ -143,13 +177,7 @@ async function handleJoin(message: Message): Promise<void> {
     
     if (!client || !streamingService) return;
 
-    const member = message.member;
-    if (!member?.voice.channel) {
-        await message.reply("❌ You must be in a voice channel first");
-        return;
-    }
-
-    const voiceChannel = member.voice.channel;
+    const voiceChannel = requireJoinChannel(message);
     const channelName = 'name' in voiceChannel ? voiceChannel.name : 'voice channel';
 
     const reservation = streamingService.reserveStartup(message.guild!.id, voiceChannel.id, message.author.id);
@@ -195,10 +223,9 @@ async function handleLeave(message: Message): Promise<void> {
         throw new Error("Streaming service not initialized");
     }
 
-    const status = streamingService.getStatus();
-    if (!status.joined && !streamingService.hasPendingStartup()) {
-        await message.reply("❌ Not currently in a voice channel");
-        return;
+    const { member, session } = requireActiveSession(message, true);
+    if (!canControlSession(member, session)) {
+        throw new PermissionDeniedError("You need control permission to stop this stream.");
     }
 
     logger.info(`Leave requested by ${message.author.tag}`);
@@ -224,17 +251,13 @@ async function handleLeave(message: Message): Promise<void> {
  * Handle !url command - navigate to a URL.
  */
 async function handleUrl(message: Message, args: string[]): Promise<void> {
+    const { member, session } = requireActiveSession(message);
+    if (!canNavigate(member, session)) {
+        throw new PermissionDeniedError("You need navigate permission to change the stream URL.");
+    }
     const url = args.join(" ");
     if (!url) {
         await message.reply("❌ Usage: `!url <url>`");
-        return;
-    }
-
-    const streamingService = getStreamingService();
-    const status = streamingService?.getStatus();
-    
-    if (!status?.joined) {
-        await message.reply("❌ Bot must be streaming first. Use `!join`");
         return;
     }
 
