@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "TheatreBot YouTube TV SponsorBlock",
+  "version": "1.0.0",
+  "description": "Skip community-reported sponsor segments on YouTube's TV interface. Uses SponsorBlock data.",
+  "host_permissions": ["https://sponsor.ajay.app/*"],
+  "background": {"service_worker": "background.js"},
+  "content_scripts": [{
+    "matches": ["https://www.youtube.com/tv", "https://www.youtube.com/tv/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle",
+    "all_frames": false
+  }]
+}
