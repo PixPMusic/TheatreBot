@@ -127,7 +127,7 @@ podman run -d \
   --name theatre-bot \
   --env-file .env \
   --shm-size=2gb \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   theatre-bot
 ```
 

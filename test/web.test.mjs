@@ -16,11 +16,12 @@ const json = value => new Response(JSON.stringify(value), { headers: { "Content-
 async function fixture(t) {
     let now = 100000, failToken = false, failMember = false, allowed = true;
     let capabilities = { control: true, navigate: true };
+    let identity = "111111111111111111";
     const calls = [], requests = [];
     const provider = async (url, options) => {
         requests.push([url, options]);
         if (url.endsWith("/oauth2/token")) return failToken ? new Response("", { status: 400 }) : json({ access_token: "fixture-access", expires_in: 3600, scope: "identify guilds.members.read" });
-        if (url.endsWith("/users/@me")) return json({ id: "111111111111111111", username: "Reviewer" });
+        if (url.endsWith("/users/@me")) return json({ id: identity, username: "Reviewer" });
         return failMember ? new Response("", { status: 403 }) : json({ roles: ["222222222222222222"] });
     };
     const oauth = new OAuthService(settings, provider, () => now);
@@ -63,6 +64,7 @@ async function fixture(t) {
     const socket = user => io(base, { transports: ["websocket"], reconnection: false, auth: { csrf: user.csrf }, extraHeaders: { Cookie: user.cookie, Origin: oauth.origin } });
     return { oauth, web, base, calls, requests, begin, finish, login, post, socket,
         advance: ms => { now += ms; }, deny: () => { allowed = false; }, allow: () => { allowed = true; },
+        identity: value => { identity = value; },
         capabilities: value => { capabilities = value; }, failToken: () => { failToken = true; }, failMember: () => { failMember = true; } };
 }
 
@@ -98,6 +100,42 @@ test("browser-bound OAuth state is single use, expires, and never exchanges an i
     assert.equal((await f.finish(expired)).status, 400);
     f.failToken();
     assert.equal((await f.finish(await f.begin())).status, 400);
+});
+
+test("abandoned anonymous login bursts cannot exhaust login slots", async t => {
+    const f = await fixture(t);
+    for (let i = 0; i < 550; i++) await f.begin();
+    assert.equal(f.requests.length, 0);
+    const pending = await f.begin();
+    const tampered = pending.state.replace(/^\d+/, String(100000 + 299000));
+    assert.equal((await f.finish({ state: tampered, cookie: `theatre_oauth_state=${tampered}` })).status, 400);
+    assert.equal(f.requests.length, 0);
+    assert.equal((await f.finish(pending)).status, 302);
+    const exchanged = f.requests.length;
+    assert.equal((await f.finish(pending)).status, 400);
+    assert.equal(f.requests.length, exchanged);
+});
+
+test("one account cannot fill session capacity or block another account's login", async t => {
+    const f = await fixture(t);
+    const first = await f.login();
+    let latest;
+    for (let i = 1; i < 10; i++) latest = await f.login();
+    assert.equal((await f.post("/api/key", first, { key: "Enter" })).status, 401);
+    assert.equal((await f.post("/api/key", latest, { key: "Enter" })).status, 200);
+    assert.equal((await f.finish(await f.begin())).status, 400);
+    f.identity("999999999999999999");
+    assert.ok(await f.login());
+    f.advance(300001);
+    f.identity("111111111111111111");
+    assert.ok(await f.login());
+});
+
+test("closing OAuth invalidates issued login state", async t => {
+    const f = await fixture(t), pending = await f.begin();
+    f.oauth.close();
+    assert.equal((await f.finish(pending)).status, 400);
+    assert.equal(f.requests.length, 0);
 });
 
 test("REST protects reads, writes, CSRF, scope and explicit navigation", async t => {

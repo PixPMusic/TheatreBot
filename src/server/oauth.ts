@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Request, Response } from "express";
 
 const API = "https://discord.com/api/v10";
@@ -48,7 +48,10 @@ export class OAuthService {
     private readonly sessionCookie: string;
     private readonly stateCookie: string;
     private readonly sessions = new Map<string, WebSession>();
-    private readonly states = new Map<string, number>();
+    private stateKey = randomBytes(32);
+    private readonly usedStates = new Map<string, number>();
+    private readonly pendingStates = new Set<string>();
+    private readonly loginTimes = new Map<string, number[]>();
     private readonly memberships = new Map<string, CachedMembership>();
     private readonly pendingMemberships = new Map<string, Promise<Membership>>();
 
@@ -75,7 +78,11 @@ export class OAuthService {
 
     private prune(): void {
         const now = this.now();
-        for (const [state, expiry] of this.states) if (expiry <= now) this.states.delete(state);
+        for (const [state, expiry] of this.usedStates) if (expiry <= now) this.usedStates.delete(state);
+        for (const [user, times] of this.loginTimes) {
+            const recent = times.filter(time => time + STATE_LIFETIME > now);
+            if (recent.length) this.loginTimes.set(user, recent); else this.loginTimes.delete(user);
+        }
         for (const [id, session] of this.sessions) if (session.expiresAt <= now) this.removeSession(id);
         for (const [key, entry] of this.memberships) if (entry.expiresAt <= now) this.memberships.delete(key);
     }
@@ -86,9 +93,9 @@ export class OAuthService {
 
     public begin(res: Response): void {
         this.prune();
-        if (this.states.size >= 500) throw new Error("Too many pending logins; retry shortly");
-        const state = nonce();
-        this.states.set(state, this.now() + STATE_LIFETIME);
+        // An abandoned login allocates no shared server-side slot.
+        const payload = `${this.now() + STATE_LIFETIME}.${nonce()}`;
+        const state = `${payload}.${createHmac("sha256", this.stateKey).update(payload).digest("hex")}`;
         this.setCookie(res, this.stateCookie, state, STATE_LIFETIME, this.secure ? "/" : "/auth/callback");
         const url = new URL("https://discord.com/oauth2/authorize");
         url.search = new URLSearchParams({
@@ -106,49 +113,67 @@ export class OAuthService {
         return response.json();
     }
 
-    /** Validate browser-bound, single-use state before exchanging any authorization code. */
+    /** Verify signed browser-bound state; successful callbacks cannot be replayed. */
     public async callback(req: Request, res: Response): Promise<void> {
         this.prune();
         const state = req.query.state;
         const browserState = cookie(req, this.stateCookie);
-        if (typeof state !== "string" || !browserState || !equal(state, browserState) || !this.states.has(state)) {
+        const stateKey = this.stateKey;
+        const parts = typeof state === "string" ? state.split(".") : [];
+        const expiry = Number(parts[0]);
+        const payload = parts.slice(0, 2).join(".");
+        if (typeof state !== "string" || !browserState || !equal(state, browserState) ||
+            parts.length !== 3 || !/^\d+$/.test(parts[0] ?? "") || !/^[0-9a-f]{64}$/.test(parts[1] ?? "") ||
+            !Number.isSafeInteger(expiry) || expiry <= this.now() || expiry > this.now() + STATE_LIFETIME ||
+            !equal(parts[2], createHmac("sha256", stateKey).update(payload).digest("hex")) ||
+            this.usedStates.has(state) || this.pendingStates.has(state)) {
             throw new Error("Login expired or state did not match; sign in again");
         }
-        this.states.delete(state);
-        this.setCookie(res, this.stateCookie, "", 0, this.secure ? "/" : "/auth/callback");
-        if (typeof req.query.code !== "string" || !req.query.code || req.query.error) {
-            throw new Error("Discord login was not completed");
-        }
-        const response = await this.request(`${API}/oauth2/token`, {
-            method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-                client_id: this.settings.clientId, client_secret: this.settings.clientSecret,
-                grant_type: "authorization_code", code: req.query.code, redirect_uri: this.settings.redirectUri,
-            }), signal: AbortSignal.timeout(10_000),
-        });
-        if (!response.ok) throw new Error("Discord login exchange failed");
-        const token = await response.json() as Record<string, unknown>;
-        if (typeof token.access_token !== "string" || !token.access_token ||
-            typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0 ||
-            typeof token.scope !== "string" || !SCOPES.every(scope => (token.scope as string).split(" ").includes(scope))) {
-            throw new Error("Discord login did not grant the required identity and membership scopes");
-        }
-        const user = await this.discord("/users/@me", token.access_token) as Record<string, unknown>;
-        if (typeof user.id !== "string" || !/^\d{1,20}$/.test(user.id) || typeof user.username !== "string") {
-            throw new Error("Discord returned an invalid identity");
-        }
-        this.prune();
-        if (this.sessions.size >= 1000) throw new Error("Too many signed-in sessions; retry shortly");
-        const lifetime = Math.min(token.expires_in * 1000, SESSION_LIFETIME);
-        const session: WebSession = {
-            id: nonce(), user: { id: user.id, username: user.username }, accessToken: token.access_token,
-            csrf: nonce(), expiresAt: this.now() + lifetime,
-        };
-        const previous = cookie(req, this.sessionCookie);
-        if (previous) this.removeSession(previous);
-        this.sessions.set(session.id, session);
-        this.setCookie(res, this.sessionCookie, session.id, lifetime);
-        res.redirect("/");
+        this.pendingStates.add(state);
+        try {
+            this.setCookie(res, this.stateCookie, "", 0, this.secure ? "/" : "/auth/callback");
+            if (typeof req.query.code !== "string" || !req.query.code || req.query.error) {
+                throw new Error("Discord login was not completed");
+            }
+            const response = await this.request(`${API}/oauth2/token`, {
+                method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({
+                    client_id: this.settings.clientId, client_secret: this.settings.clientSecret,
+                    grant_type: "authorization_code", code: req.query.code, redirect_uri: this.settings.redirectUri,
+                }), signal: AbortSignal.timeout(10_000),
+            });
+            if (!response.ok) throw new Error("Discord login exchange failed");
+            const token = await response.json() as Record<string, unknown>;
+            if (typeof token.access_token !== "string" || !token.access_token ||
+                typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0 ||
+                typeof token.scope !== "string" || !SCOPES.every(scope => (token.scope as string).split(" ").includes(scope))) {
+                throw new Error("Discord login did not grant the required identity and membership scopes");
+            }
+            const user = await this.discord("/users/@me", token.access_token) as Record<string, unknown>;
+            if (typeof user.id !== "string" || !/^\d{1,20}$/.test(user.id) || typeof user.username !== "string") {
+                throw new Error("Discord returned an invalid identity");
+            }
+            if (this.stateKey !== stateKey) throw new Error("Login expired; sign in again");
+            this.prune();
+            const recent = this.loginTimes.get(user.id) ?? [];
+            if (recent.length >= 10) throw new Error("Too many logins for this account; retry shortly");
+            this.loginTimes.set(user.id, [...recent, this.now()]);
+            this.usedStates.set(state, expiry);
+            // Limit one account to three sessions and evict rather than block unrelated logins.
+            const owned = [...this.sessions.values()].filter(session => session.user.id === user.id);
+            while (owned.length >= 3) this.removeSession(owned.shift()!.id);
+            while (this.sessions.size >= 1000) this.removeSession(this.sessions.keys().next().value!);
+            const lifetime = Math.min(token.expires_in * 1000, SESSION_LIFETIME);
+            const session: WebSession = {
+                id: nonce(), user: { id: user.id, username: user.username }, accessToken: token.access_token,
+                csrf: nonce(), expiresAt: this.now() + lifetime,
+            };
+            const previous = cookie(req, this.sessionCookie);
+            if (previous) this.removeSession(previous);
+            this.sessions.set(session.id, session);
+            this.setCookie(res, this.sessionCookie, session.id, lifetime);
+            res.redirect("/");
+        } finally { this.pendingStates.delete(state); }
     }
 
     public session(req: Pick<Request, "headers">): WebSession | undefined {
@@ -203,8 +228,11 @@ export class OAuthService {
     }
 
     public close(): void {
+        this.stateKey = randomBytes(32);
         this.sessions.clear();
-        this.states.clear();
+        this.usedStates.clear();
+        this.pendingStates.clear();
+        this.loginTimes.clear();
         this.memberships.clear();
     }
 }
