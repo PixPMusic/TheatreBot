@@ -7,7 +7,7 @@ import type { NavigationKey, BrowserAction, Preset, DEFAULT_PRESETS } from "../t
 import { validateNavigationUrl } from "./url.js";
 
 let driver: WebDriver | null = null;
-// Keep ownership until quit succeeds, without exposing an unusable browser.
+// Own a browser while quit is pending, without exposing an unusable session.
 let retiringDriver: WebDriver | null = null;
 let initialization: { cancelled: boolean } | null = null;
 let initializing: Promise<WebDriver> | null = null;
@@ -100,9 +100,6 @@ export function initDriver(): Promise<WebDriver> {
     if (initializing) {
         return initializing;
     }
-    if (retiringDriver) {
-        return closeDriver().then(() => initDriver());
-    }
 
     const attempt = { cancelled: false };
     initialization = attempt;
@@ -145,9 +142,11 @@ export function initDriver(): Promise<WebDriver> {
                 retiringDriver = candidate;
                 try {
                     await candidate.quit();
-                    retiringDriver = null;
                 } catch (cleanupError) {
                     logger.error("Failed to close uninitialized Chrome WebDriver:", cleanupError);
+                } finally {
+                    // Selenium invalidates the session even when quit rejects.
+                    retiringDriver = null;
                 }
             }
             logger.error("Failed to initialize Chrome WebDriver:", error);
@@ -327,13 +326,17 @@ export function closeDriver(): Promise<void> {
     driver = null;
     closing = Promise.resolve().then(async () => {
         if (pending) {
-            // Initialization attempts cleanup first; retry any retained candidate.
+            // Initialization owns its candidate's single disposal attempt.
             await pending.catch(() => {});
         }
         if (retiringDriver) {
-            await retiringDriver.quit();
-            retiringDriver = null;
-            logger.info("Chrome WebDriver closed");
+            try {
+                await retiringDriver.quit();
+                logger.info("Chrome WebDriver closed");
+            } finally {
+                // A settled quit leaves this Selenium handle unusable.
+                retiringDriver = null;
+            }
         }
     }).finally(() => {
         closing = null;
