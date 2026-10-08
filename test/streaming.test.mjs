@@ -177,6 +177,15 @@ test("synchronous preparation failure cleans capture and clears playing", async 
 test("beta capture maps browser video/audio with one H264 encode and Opus", () => {
     const args = directStreamArguments();
     const value = key => args[args.indexOf(key) + 1];
+    const videoInputEnd = args.indexOf("-i");
+    const videoOptions = args.slice(0, videoInputEnd);
+    const remainingOptions = args.slice(videoInputEnd + 2);
+    for (const [option, expected] of [["-probesize", "32"], ["-analyzeduration", "0"], ["-fflags", "nobuffer"]]) {
+        const position = videoOptions.indexOf(option);
+        assert.ok(position >= 0 && position < videoOptions.indexOf("-f"));
+        assert.equal(videoOptions[position + 1], expected);
+        assert.ok(!remainingOptions.includes(option));
+    }
     assert.equal(value("-c:v"), "libx264");
     assert.equal(value("-c:a"), "libopus");
     assert.equal(value("-ar"), "48000");
