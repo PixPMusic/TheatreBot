@@ -7,6 +7,7 @@ import logger from "../utils/logger.js";
 import type { NavigationKey, BrowserAction } from "../types/index.js";
 
 import { validateNavigationUrl } from "./url.js";
+import { resolveBrowserExtensions, validateExtensionBrowser, stageBrowserExtensions } from "./extensions.js";
 
 let driver: WebDriver | null = null;
 let owner: string | null = null;
@@ -37,7 +38,7 @@ const KEY_MAP: Record<NavigationKey, string> = {
 /**
  * Get Chrome options for the browser.
  */
-export function getChromeOptions(profileDirectory: string): chrome.Options {
+export function getChromeOptions(profileDirectory: string, extensionPaths: readonly string[] = []): chrome.Options {
     const options = new chrome.Options();
     options.addArguments(`--user-data-dir=${profileDirectory}`);
 
@@ -67,8 +68,7 @@ export function getChromeOptions(profileDirectory: string): chrome.Options {
         "--kiosk",
         "--start-fullscreen",
         
-        // Disable extensions and infobars
-        "--disable-extensions",
+        // Suppress infobars
         "--disable-infobars",
         "--disable-translate",
         "--disable-popup-blocking",
@@ -83,7 +83,17 @@ export function getChromeOptions(profileDirectory: string): chrome.Options {
     );
 
     // Hide "Chrome is being controlled by automated test software"
-    options.excludeSwitches("enable-automation");
+    if (extensionPaths.length) {
+        options.addArguments(
+            `--load-extension=${extensionPaths.join(",")}`,
+            `--disable-extensions-except=${extensionPaths.join(",")}`,
+        );
+        // ChromeDriver can otherwise add a disabling switch of its own.
+        options.excludeSwitches("enable-automation", "disable-extensions");
+    } else {
+        options.addArguments("--disable-extensions");
+        options.excludeSwitches("enable-automation");
+    }
     options.setUserPreferences({
         "useAutomationExtension": false,
         "credentials_enable_service": false,
@@ -129,7 +139,11 @@ export function initDriver(userId: string): Promise<WebDriver> {
             const defaultUrl = validateNavigationUrl(config.browser.defaultUrl);
             lease = await acquireProfile(config.browser.profileRoot, userId);
             if (attempt.cancelled) throw new Error("WebDriver initialization cancelled by closeDriver");
-            const options = getChromeOptions(lease.directory);
+            validateExtensionBrowser(resolveBrowserExtensions(config.browser.extensionPaths),
+                process.env.CHROME_BIN || "/usr/lib64/chromium-browser/chromium-browser");
+            const extensionPaths = await stageBrowserExtensions(config.browser.extensionPaths, lease.directory);
+            if (attempt.cancelled) throw new Error("WebDriver initialization cancelled by closeDriver");
+            const options = getChromeOptions(lease.directory, extensionPaths);
             browserProcess = await BrowserProcess.launch(process => { browserProcess = process; });
             const build = new Builder()
                 .forBrowser(Browser.CHROME)
