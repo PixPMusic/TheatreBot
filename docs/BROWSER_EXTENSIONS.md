@@ -2,8 +2,8 @@
 
 Extensions are disabled by default. An operator can opt into local unpacked
 Manifest V3 extensions with `BROWSER_EXTENSION_PATHS`, a JSON array of absolute
-directories inside the runtime. Nothing is downloaded or installed at startup,
-and viewers cannot change the extension list through the remote controls.
+directories inside the runtime. TheatreBot never downloads extension assets at
+startup, and viewers cannot change the extension list through the remote controls.
 An invalid list, unreadable manifest, MV2 manifest, or incompatible browser
 prevents startup before Discord login.
 
@@ -62,10 +62,12 @@ shape and MV3, not whether extension code is safe.
 
 ## Container setup
 
-Add the read-only asset mount to the `theatre-bot` service in `compose.yaml`:
+Add the read-only asset mount alongside the existing profile volume under the
+`theatre-bot` service in `compose.yaml`:
 
 ```yaml
 volumes:
+  - browser-profiles:/var/lib/theatrebot/profiles
   - ./extensions-assets:/opt/theatrebot-extensions:ro
 ```
 
@@ -79,14 +81,15 @@ Select only SponsorBlock by omitting the second directory. Clear the variable or
 set `BROWSER_EXTENSION_PATHS=[]` to return to disabled extensions. Paths must be
 absolute and cannot contain commas or control characters. Symlinks and `..`
 are resolved to canonical paths; duplicate directories are rejected. Paths are
-operator configuration, not a filesystem sandbox.
+operator configuration, not a filesystem sandbox. Asset contents must be regular
+files and directories; nested symlinks are rejected during staging.
 
 Extension settings live in the selected Chrome profile. Mounted originals remain
 read-only. TheatreBot stages a private writable copy under that profile's
 `.theatrebot-extensions` directory because Chromium must write indexed static
 filter rules inside unpacked extensions. Chrome writes extension storage into
-its writable profile. Persistent settings
-require a persistent browser profile. Each profile has independent extension
+its writable profile. The persistent profile volume in bundled Compose retains
+settings across container restarts. Each profile has independent extension
 settings; TheatreBot does not synchronize them.
 
 The bot launches in kiosk mode. For first-run onboarding or a permissions change,

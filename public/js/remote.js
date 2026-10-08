@@ -1,3 +1,10 @@
+// Complete OAuth by returning to the claim page; login itself never starts a browser.
+const returnClaim = sessionStorage.getItem('theatre_claim');
+if (returnClaim && /^\/claim\/[a-f0-9]{64}$/.test(returnClaim)) {
+    sessionStorage.removeItem('theatre_claim');
+    location.replace(returnClaim);
+}
+
 /**
  * Theatre Bot - Remote Control JavaScript
  */

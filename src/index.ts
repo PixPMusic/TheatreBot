@@ -1,10 +1,10 @@
 import config from "./config.js";
 import logger from "./utils/logger.js";
 import { login, getClient } from "./discord/client.js";
-import { initStreamingService, getStreamingService } from "./discord/streaming.js";
+import { initStreamingService } from "./discord/streaming.js";
 import { setupCommands } from "./discord/commands.js";
-import { getBrowserControls } from "./browser/controls.js";
-import { getCaptureService } from "./browser/capture.js";
+import { validateProfileRoot } from "./browser/profiles.js";
+import { streamClaims } from "./server/claims.js";
 import { startServer, stopServer, validateServerConfiguration } from "./server/index.js";
 import { loadPermissionsFile } from "./rbac/permissions.js";
 import { resolveBrowserExtensions, validateExtensionBrowser } from "./browser/extensions.js";
@@ -32,6 +32,8 @@ async function main(): Promise<void> {
         validateServerConfiguration();
         validateExtensionBrowser(resolveBrowserExtensions(config.browser.extensionPaths),
             process.env.CHROME_BIN || "/usr/lib64/chromium-browser/chromium-browser");
+        validateProfileRoot(config.browser.profileRoot);
+        if (process.platform !== "linux") throw new Error("Personal browser profiles require Linux process verification; run the container on other hosts");
         // 1. Login to Discord
         await login();
         const client = getClient();
@@ -58,7 +60,7 @@ async function main(): Promise<void> {
         logger.info("");
         logger.info("Usage:");
         logger.info("  1. Use Discord commands to join a voice channel");
-        logger.info("  2. The bot will start Chrome and begin streaming");
+        logger.info("  2. Sign in through the claim link to start your personal browser");
         logger.info("  3. Control the browser via the web UI or Discord");
         logger.info("");
         if (config.server.enabled) {
@@ -75,10 +77,8 @@ async function main(): Promise<void> {
 async function shutdown(signal: string): Promise<void> {
     logger.info(`Received ${signal}, shutting down...`);
     try {
-        getStreamingService()?.cleanup();
-        getCaptureService().stopCapture();
+        await streamClaims.stop();
         await stopServer();
-        await getBrowserControls().close();
     } catch (error) {
         logger.error("Error during shutdown:", error);
     }

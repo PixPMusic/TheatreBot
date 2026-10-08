@@ -1,16 +1,22 @@
 import { Builder, Browser, type WebDriver, Key } from "selenium-webdriver";
 import chrome from "selenium-webdriver/chrome.js";
+import { acquireProfile, type ProfileLease } from "./profiles.js";
+import { BrowserProcess } from "./processes.js";
 import config from "../config.js";
 import logger from "../utils/logger.js";
-import type { NavigationKey, BrowserAction, Preset, DEFAULT_PRESETS } from "../types/index.js";
+import type { NavigationKey, BrowserAction } from "../types/index.js";
 
 import { validateNavigationUrl } from "./url.js";
-import { resolveBrowserExtensions, validateExtensionBrowser } from "./extensions.js";
+import { resolveBrowserExtensions, validateExtensionBrowser, stageBrowserExtensions } from "./extensions.js";
 
 let driver: WebDriver | null = null;
+let owner: string | null = null;
+let lease: ProfileLease | null = null;
+let browserProcess: BrowserProcess | null = null;
+let cleanupBlocked = false;
 // Own a browser while quit is pending, without exposing an unusable session.
 let retiringDriver: WebDriver | null = null;
-let initialization: { cancelled: boolean } | null = null;
+let initialization: { cancelled: boolean; controller: AbortController } | null = null;
 let initializing: Promise<WebDriver> | null = null;
 let closing: Promise<void> | null = null;
 
@@ -32,8 +38,9 @@ const KEY_MAP: Record<NavigationKey, string> = {
 /**
  * Get Chrome options for the browser.
  */
-export function getChromeOptions(extensionPaths: readonly string[] = resolveBrowserExtensions(config.browser.extensionPaths)): chrome.Options {
+export function getChromeOptions(profileDirectory: string, extensionPaths: readonly string[] = []): chrome.Options {
     const options = new chrome.Options();
+    options.addArguments(`--user-data-dir=${profileDirectory}`);
 
     // Set Chromium binary path (for container with Chromium from Fedora repos)
     const chromeBin = process.env.CHROME_BIN || "/usr/lib64/chromium-browser/chromium-browser";
@@ -99,10 +106,13 @@ export function getChromeOptions(extensionPaths: readonly string[] = resolveBrow
 /**
  * Initialize the Selenium WebDriver with Chrome.
  */
-export function initDriver(): Promise<WebDriver> {
+export function initDriver(userId: string): Promise<WebDriver> {
+    if (!/^\d{1,20}$/.test(userId)) return Promise.reject(new Error("A Discord profile owner is required"));
+    if (cleanupBlocked) return Promise.reject(new Error("Browser cleanup is incomplete; retry !leave"));
+    if (owner && owner !== userId) return Promise.reject(new Error("Another profile is leased"));
     // Wait for disposal before allowing a replacement browser to start.
     if (closing) {
-        return closing.then(() => initDriver());
+        return closing.then(() => initDriver(userId));
     }
     if (driver) {
         return Promise.resolve(driver);
@@ -111,7 +121,8 @@ export function initDriver(): Promise<WebDriver> {
         return initializing;
     }
 
-    const attempt = { cancelled: false };
+    owner = userId;
+    const attempt = { cancelled: false, controller: new AbortController() };
     initialization = attempt;
     // Defer work so the shared promise is installed before any build can start.
     initializing = Promise.resolve().then(async () => {
@@ -126,23 +137,43 @@ export function initDriver(): Promise<WebDriver> {
             logger.info(`User Agent: ${config.browser.userAgent}`);
 
             const defaultUrl = validateNavigationUrl(config.browser.defaultUrl);
-            const options = getChromeOptions();
+            lease = await acquireProfile(config.browser.profileRoot, userId);
+            if (attempt.cancelled) throw new Error("WebDriver initialization cancelled by closeDriver");
             validateExtensionBrowser(resolveBrowserExtensions(config.browser.extensionPaths),
                 process.env.CHROME_BIN || "/usr/lib64/chromium-browser/chromium-browser");
-            const chromedriverPath = process.env.CHROMEDRIVER_PATH || "/usr/lib64/chromium-browser/chromedriver";
-            const service = new chrome.ServiceBuilder(chromedriverPath);
-            candidate = await new Builder()
+            const extensionPaths = await stageBrowserExtensions(config.browser.extensionPaths, lease.directory);
+            if (attempt.cancelled) throw new Error("WebDriver initialization cancelled by closeDriver");
+            const options = getChromeOptions(lease.directory, extensionPaths);
+            browserProcess = await BrowserProcess.launch(process => { browserProcess = process; });
+            const build = new Builder()
                 .forBrowser(Browser.CHROME)
                 .setChromeOptions(options)
-                .setChromeService(service)
-                .build();
+                .usingServer(browserProcess.url)
+                .build().then(built => {
+                    if (attempt.cancelled) void built.quit().catch(error => logger.error("Late cancelled Selenium session cleanup failed:", error));
+                    return built;
+                });
+            let buildTimer: ReturnType<typeof setTimeout> | undefined;
+            try { candidate = await Promise.race([build, new Promise<never>((_, reject) => {
+                buildTimer = setTimeout(() => reject(new Error("Chrome startup timed out")), 20_000);
+            }), new Promise<never>((_, reject) => {
+                if (attempt.cancelled) reject(new Error("WebDriver initialization cancelled by closeDriver"));
+                else attempt.controller.signal.addEventListener('abort', () => reject(new Error("WebDriver initialization cancelled by closeDriver")), { once: true });
+            })]); } finally { if (buildTimer) clearTimeout(buildTimer); }
 
             if (attempt.cancelled) {
                 throw new Error("WebDriver initialization cancelled by closeDriver");
             }
+            await browserProcess.verifyChrome((await candidate.getCapabilities()).get("goog:processID"), lease.directory);
             logger.info("Chrome WebDriver built successfully");
 
-            await candidate.get(defaultUrl);
+            let navigationTimer: ReturnType<typeof setTimeout> | undefined;
+            try { await Promise.race([candidate.get(defaultUrl), new Promise<never>((_, reject) => {
+                navigationTimer = setTimeout(() => reject(new Error("Initial browser navigation timed out")), 20_000);
+            }), new Promise<never>((_, reject) => {
+                if (attempt.cancelled) reject(new Error("WebDriver initialization cancelled by closeDriver"));
+                else attempt.controller.signal.addEventListener('abort', () => reject(new Error("WebDriver initialization cancelled by closeDriver")), { once: true });
+            })]); } finally { if (navigationTimer) clearTimeout(navigationTimer); }
             if (attempt.cancelled) {
                 throw new Error("WebDriver initialization cancelled by closeDriver");
             }
@@ -150,16 +181,10 @@ export function initDriver(): Promise<WebDriver> {
             driver = candidate;
             return candidate;
         } catch (error) {
-            if (candidate) {
-                retiringDriver = candidate;
-                try {
-                    await candidate.quit();
-                } catch (cleanupError) {
-                    logger.error("Failed to close uninitialized Chrome WebDriver:", cleanupError);
-                } finally {
-                    // Selenium invalidates the session even when quit rejects.
-                    retiringDriver = null;
-                }
+            retiringDriver = candidate;
+            try { await dispose(); } catch (cleanupError) {
+                cleanupBlocked = true;
+                logger.error("Browser cleanup blocked:", cleanupError);
             }
             logger.error("Failed to initialize Chrome WebDriver:", error);
             throw error;
@@ -182,32 +207,32 @@ export function getDriver(): WebDriver | null {
 /**
  * Navigate to a URL.
  */
-export async function navigate(url: string): Promise<void> {
-    if (!driver) {
+export async function navigate(url: string, expected: WebDriver | null = driver): Promise<void> {
+    if (!expected || expected !== driver) {
         throw new Error("WebDriver not initialized");
     }
 
     const validated = validateNavigationUrl(url);
     logger.info(`Navigating to ${validated}`);
-    await driver.get(validated);
+    await expected.get(validated);
 }
 
 /**
  * Get the current URL.
  */
-export async function getCurrentUrl(): Promise<string> {
-    if (!driver) {
+export async function getCurrentUrl(expected: WebDriver | null = driver): Promise<string> {
+    if (!expected || expected !== driver) {
         throw new Error("WebDriver not initialized");
     }
 
-    return await driver.getCurrentUrl();
+    return await expected.getCurrentUrl();
 }
 
 /**
  * Send a navigation key (arrow, enter, escape, etc).
  */
-export async function sendKey(key: NavigationKey): Promise<void> {
-    if (!driver) {
+export async function sendKey(key: NavigationKey, expected: WebDriver | null = driver): Promise<void> {
+    if (!expected || expected !== driver) {
         throw new Error("WebDriver not initialized");
     }
 
@@ -219,35 +244,37 @@ export async function sendKey(key: NavigationKey): Promise<void> {
     logger.debug(`Sending key: ${key}`);
     
     // Send key to the active element (or body if none)
-    const activeElement = await driver.switchTo().activeElement();
+    const activeElement = await expected.switchTo().activeElement();
+    assertDriver(expected);
     await activeElement.sendKeys(seleniumKey);
 }
 
 /**
  * Type text into the currently focused element.
  */
-export async function typeText(text: string): Promise<void> {
-    if (!driver) {
+export async function typeText(text: string, expected: WebDriver | null = driver): Promise<void> {
+    if (!expected || expected !== driver) {
         throw new Error("WebDriver not initialized");
     }
 
-    logger.debug(`Typing text: ${text.substring(0, 20)}...`);
+    logger.debug("Typing into owner browser");
     
-    const activeElement = await driver.switchTo().activeElement();
+    const activeElement = await expected.switchTo().activeElement();
+    assertDriver(expected);
     await activeElement.sendKeys(text);
 }
 
 /**
  * Click at specific coordinates.
  */
-export async function clickAt(x: number, y: number): Promise<void> {
-    if (!driver) {
+export async function clickAt(x: number, y: number, expected: WebDriver | null = driver): Promise<void> {
+    if (!expected || expected !== driver) {
         throw new Error("WebDriver not initialized");
     }
 
     logger.debug(`Clicking at (${x}, ${y})`);
     
-    const actions = driver.actions({ async: true });
+    const actions = expected.actions({ async: true });
     // Move relative to viewport and click
     await actions.move({ x, y }).click().perform();
 }
@@ -255,8 +282,8 @@ export async function clickAt(x: number, y: number): Promise<void> {
 /**
  * Scroll the page.
  */
-export async function scroll(direction: "up" | "down"): Promise<void> {
-    if (!driver) {
+export async function scroll(direction: "up" | "down", expected: WebDriver | null = driver): Promise<void> {
+    if (!expected || expected !== driver) {
         throw new Error("WebDriver not initialized");
     }
 
@@ -264,38 +291,39 @@ export async function scroll(direction: "up" | "down"): Promise<void> {
     
     logger.debug(`Scrolling ${direction}`);
     
-    const body = await driver.findElement({ css: "body" });
+    const body = await expected.findElement({ css: "body" });
+    assertDriver(expected);
     await body.sendKeys(key);
 }
 
 /**
  * Execute a browser action.
  */
-export async function executeAction(action: BrowserAction): Promise<void> {
+export async function executeAction(action: BrowserAction, expected: WebDriver | null = driver): Promise<void> {
     switch (action.type) {
         case "navigate":
             if (action.payload.url) {
-                await navigate(action.payload.url);
+                await navigate(action.payload.url, expected);
             }
             break;
         case "key":
             if (action.payload.key) {
-                await sendKey(action.payload.key as NavigationKey);
+                await sendKey(action.payload.key as NavigationKey, expected);
             }
             break;
         case "click":
             if (action.payload.x !== undefined && action.payload.y !== undefined) {
-                await clickAt(action.payload.x, action.payload.y);
+                await clickAt(action.payload.x, action.payload.y, expected);
             }
             break;
         case "scroll":
             if (action.payload.direction) {
-                await scroll(action.payload.direction);
+                await scroll(action.payload.direction, expected);
             }
             break;
         case "type":
             if (action.payload.text) {
-                await typeText(action.payload.text);
+                await typeText(action.payload.text, expected);
             }
             break;
     }
@@ -304,54 +332,57 @@ export async function executeAction(action: BrowserAction): Promise<void> {
 /**
  * Focus and type into a specific element (for preset search boxes).
  */
-export async function focusAndType(selector: string, text: string): Promise<void> {
-    if (!driver) {
+export async function focusAndType(selector: string, text: string, expected: WebDriver | null = driver): Promise<void> {
+    if (!expected || expected !== driver) {
         throw new Error("WebDriver not initialized");
     }
 
     logger.debug(`Focusing on ${selector} and typing`);
     
-    const element = await driver.findElement({ css: selector });
+    const element = await expected.findElement({ css: selector });
+    assertDriver(expected);
     await element.click();
+    assertDriver(expected);
     await element.clear();
+    assertDriver(expected);
     await element.sendKeys(text);
 }
 
 /**
  * Close the browser.
  */
-export function closeDriver(): Promise<void> {
-    if (closing) {
-        return closing;
-    }
-    if (!driver && !initializing && !retiringDriver) {
-        return Promise.resolve();
-    }
+export function assertDriver(expected: WebDriver | null): asserts expected is WebDriver {
+    if (!expected || expected !== driver) throw new Error("Browser session changed");
+}
 
-    if (initialization) {
-        initialization.cancelled = true;
+async function dispose(): Promise<void> {
+    const retiring = retiringDriver;
+    retiringDriver = null; // Never reuse an invalidated Selenium session, including failed quit.
+    if (browserProcess) await browserProcess.snapshot();
+    if (retiring) {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try { await Promise.race([retiring.quit(), new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("Chrome quit timed out")), 10_000);
+        })]); } catch (error) { logger.error("Selenium quit failed; disposing owned processes:", error); }
+        finally { if (timeout) clearTimeout(timeout); }
     }
+    await browserProcess?.close();
+    browserProcess = null;
+    await lease?.release();
+    lease = null;
+    owner = null;
+    cleanupBlocked = false;
+}
+
+export function closeDriver(): Promise<void> {
+    if (closing) return closing;
+    if (initialization) { initialization.cancelled = true; initialization.controller.abort(); }
     const pending = initializing;
-    if (driver) {
-        retiringDriver = driver;
-    }
+    if (driver) retiringDriver = driver;
     driver = null;
     closing = Promise.resolve().then(async () => {
-        if (pending) {
-            // Initialization owns its candidate's single disposal attempt.
-            await pending.catch(() => {});
-        }
-        if (retiringDriver) {
-            try {
-                await retiringDriver.quit();
-                logger.info("Chrome WebDriver closed");
-            } finally {
-                // A settled quit leaves this Selenium handle unusable.
-                retiringDriver = null;
-            }
-        }
-    }).finally(() => {
-        closing = null;
-    });
+        if (pending) await pending.catch(() => {});
+        await dispose();
+    }).catch(error => { cleanupBlocked = true; throw error; }).finally(() => { closing = null; });
     return closing;
 }

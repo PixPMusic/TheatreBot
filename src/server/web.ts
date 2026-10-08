@@ -7,13 +7,14 @@ import { validateNavigationUrl } from "../browser/url.js";
 import type { NavigationKey } from "../types/index.js";
 import { WebAccessError, type AuthorizedView } from "./authorization.js";
 import { OAuthService, type WebSession } from "./oauth.js";
+import { streamClaims, type StreamClaims } from "./claims.js";
 
 type Capability = "control" | "navigate";
 const KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Escape", "Backspace", "Tab", "Space"]);
 type Controls = Pick<BrowserControls, "getCurrentUrl" | "getCurrentPreset" | "getPresets" | "navigateTo" | "navigateToPreset" | "sendKey" | "search" | "submitSearch" | "goBack" | "refresh">;
 
 /** Create an isolated HTTP/Socket.IO instance with the same gates for both transports. */
-export function createWebServer(oauth: OAuthService, authorize: ((session: WebSession) => Promise<AuthorizedView>) & { close?: () => void }, controls: Controls) {
+export function createWebServer(oauth: OAuthService, authorize: ((session: WebSession) => Promise<AuthorizedView>) & { close?: () => void }, controls: Controls, claims: Pick<StreamClaims, "claim"> = streamClaims) {
     const app = express();
     const server = createServer(app);
     const trustedRequest = (req: IncomingMessage): boolean => {
@@ -60,6 +61,17 @@ export function createWebServer(oauth: OAuthService, authorize: ((session: WebSe
         try {
             const session = login(req); write(req, session); oauth.logout(req, res);
             for (const socket of io.sockets.sockets.values()) if (socket.data.session === session) socket.disconnect(true);
+            res.json({ success: true });
+        } catch (cause) { error(res, cause); }
+    });
+    app.get("/claim/:id", (req, res) => {
+        if (!/^[a-f0-9]{64}$/.test(String(req.params.id))) { res.status(404).send("Unknown claim"); return; }
+        res.sendFile(fileURLToPath(new URL("../../public/claim.html", import.meta.url)));
+    });
+    app.post("/api/claim/:id", async (req, res) => {
+        try {
+            const session = login(req); write(req, session);
+            await claims.claim(String(req.params.id), session, () => oauth.valid(session));
             res.json({ success: true });
         } catch (cause) { error(res, cause); }
     });

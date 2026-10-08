@@ -6,10 +6,32 @@ import { tmpdir } from "node:os";
 import { Builder } from "selenium-webdriver";
 import { resolveBrowserExtensions, validateExtensionBrowser, stageBrowserExtensions } from "../dist/browser/extensions.js";
 import { getChromeOptions, initDriver, closeDriver } from "../dist/browser/driver.js";
+import { BrowserProcess } from "../dist/browser/processes.js";
 import config from "../dist/config.js";
 import logger from "../dist/utils/logger.js";
 
 logger.silent = true;
+const OWNER = "123456789012345678";
+function driverFixture(t) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "theatrebot-extension-profile-")));
+    const previous = { root: config.browser.profileRoot, paths: config.browser.extensionPaths, binary: process.env.CHROME_BIN };
+    config.browser.profileRoot = root;
+    const binary = join(root, "chromium-version");
+    writeFileSync(binary, "#!/bin/sh\nprintf 'Chromium 154.0.8037.92\\n'\n", { mode: 0o700 });
+    process.env.CHROME_BIN = binary;
+    const launch = t.mock.method(BrowserProcess, "launch", async () => ({
+        url: "http://127.0.0.1:4444", snapshot: async () => {}, verifyChrome: async () => {}, close: async () => {},
+    }));
+    t.after(async () => {
+        await closeDriver();
+        config.browser.profileRoot = previous.root;
+        config.browser.extensionPaths = previous.paths;
+        if (previous.binary === undefined) delete process.env.CHROME_BIN;
+        else process.env.CHROME_BIN = previous.binary;
+        rmSync(root, { recursive: true, force: true });
+    });
+    return { root, launch };
+}
 function fixture(t) {
     const root = mkdtempSync(join(tmpdir(), "theatrebot-extensions-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -25,7 +47,7 @@ test("extensions are opt-in, with no asset reads or browser execution when disab
     assert.deepEqual(resolveBrowserExtensions(""), []);
     assert.deepEqual(resolveBrowserExtensions(" [] "), []);
     validateExtensionBrowser([], "/nonexistent/browser");
-    const options = getChromeOptions().get("goog:chromeOptions");
+    const options = getChromeOptions("/profile").get("goog:chromeOptions");
     assert.ok(options.args.includes("--disable-extensions"));
     assert.ok(!options.args.some(arg => arg.startsWith("--load-extension=")));
 });
@@ -61,11 +83,8 @@ test("canonicalizes operator paths and rejects duplicate aliases", t => {
 
 test("multiple enabled assets load together without a disabling ChromeDriver switch", t => {
     const create = fixture(t), paths = [create("SponsorBlock"), create("uBOL")];
-    const previous = config.browser.extensionPaths;
-    t.after(() => { config.browser.extensionPaths = previous; });
-    config.browser.extensionPaths = JSON.stringify(paths);
     const canonical = paths.map(path => realpathSync(path));
-    const options = getChromeOptions().get("goog:chromeOptions");
+    const options = getChromeOptions("/profile", canonical).get("goog:chromeOptions");
     assert.ok(options.args.includes(`--load-extension=${canonical.join(",")}`));
     assert.ok(options.args.includes(`--disable-extensions-except=${canonical.join(",")}`));
     assert.ok(!options.args.includes("--disable-extensions"));
@@ -73,12 +92,52 @@ test("multiple enabled assets load together without a disabling ChromeDriver swi
 });
 
 test("invalid assets fail before building a browser", async t => {
-    const previous = config.browser.extensionPaths;
-    t.after(async () => { config.browser.extensionPaths = previous; await closeDriver(); });
+    const { root, launch } = driverFixture(t);
     config.browser.extensionPaths = "broken";
     const build = t.mock.method(Builder.prototype, "build", () => { throw new Error("must not build"); });
-    await assert.rejects(initDriver(), /BROWSER_EXTENSION_PATHS/);
+    await assert.rejects(initDriver(OWNER), /BROWSER_EXTENSION_PATHS/);
     assert.equal(build.mock.callCount(), 0);
+    assert.equal(launch.mock.callCount(), 0);
+    assert.equal(existsSync(join(root, ".theatrebot-browser-lease")), false);
+    assert.equal(existsSync(join(root, OWNER, ".theatrebot-lease")), false);
+});
+
+test("driver loads writable copies only after acquiring the profile lease", async t => {
+    const { root } = driverFixture(t);
+    const paths = [fixture(t)("SponsorBlock"), fixture(t)("uBOL")];
+    config.browser.extensionPaths = JSON.stringify(paths);
+    let options;
+    t.mock.method(Builder.prototype, "setChromeOptions", function(value) { options = value.get("goog:chromeOptions"); return this; });
+    const browser = { get: async () => {}, quit: async () => {}, getCapabilities: async () => new Map([["goog:processID", 1]]) };
+    t.mock.method(Builder.prototype, "build", async () => {
+        assert.equal(existsSync(join(root, ".theatrebot-browser-lease")), true);
+        assert.equal(existsSync(join(root, OWNER, ".theatrebot-lease")), true);
+        return browser;
+    });
+    await initDriver(OWNER);
+    const loaded = options.args.find(arg => arg.startsWith("--load-extension=")).slice("--load-extension=".length).split(",");
+    assert.equal(loaded.length, 2);
+    for (const path of loaded) {
+        assert.ok(path.startsWith(join(root, OWNER, ".theatrebot-extensions") + "/"));
+        assert.equal(JSON.parse(readFileSync(join(path, "manifest.json"), "utf8")).manifest_version, 3);
+    }
+    assert.ok(!options.args.includes("--disable-extensions"));
+    assert.ok(options.args.includes(`--user-data-dir=${join(root, OWNER)}`));
+    await closeDriver();
+    assert.equal(existsSync(join(root, ".theatrebot-browser-lease")), false);
+});
+
+test("a staging failure releases the lease without starting ChromeDriver", async t => {
+    const { root, launch } = driverFixture(t);
+    const source = fixture(t)("source");
+    symlinkSync(join(source, "manifest.json"), join(source, "escape"));
+    config.browser.extensionPaths = JSON.stringify([source]);
+    const build = t.mock.method(Builder.prototype, "build", () => { throw new Error("must not build"); });
+    await assert.rejects(initDriver(OWNER), /symlinks/);
+    assert.equal(launch.mock.callCount(), 0);
+    assert.equal(build.mock.callCount(), 0);
+    assert.equal(existsSync(join(root, ".theatrebot-browser-lease")), false);
+    assert.equal(existsSync(join(root, OWNER, ".theatrebot-lease")), false);
 });
 
 test("browser compatibility failures explain how to select a supported binary", t => {

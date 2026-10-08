@@ -10,5 +10,8 @@ extensions-assets
 extension-downloads
 .cache
 tmp
+
+# Browser state must never enter an image
 profiles
 browser-profiles
+data
