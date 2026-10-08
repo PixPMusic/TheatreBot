@@ -56,7 +56,7 @@ for (const command of ["!join", "!beta"]) {
     test(`${command} uses direct browser audio/video and leaves without awaiting playback`, { timeout: 1000 }, async t => {
         const h = harness(t);
         await dispatch(h.message(command));
-        assert.deepEqual(h.calls, ["join", "browser", "session", "direct"]);
+        assert.deepEqual(h.calls, ["browser", "join", "session", "direct"]);
         assert.match(h.replies[0], /H264 \+ browser audio/);
         assert.doesNotMatch(h.replies[0], /Beta|Stable/);
         await dispatch(h.message("!leave"));
@@ -64,6 +64,21 @@ for (const command of ["!join", "!beta"]) {
         assert.deepEqual(h.reactions, ["✅", "✅"]);
     });
 }
+
+test("browser startup failure leaves !join disconnected and retryable", async t => {
+    const h = harness(t);
+    t.mock.method(getBrowserControls(), "initialize", async () => { throw new Error("browser failed"); });
+    await dispatch(h.message("!join"));
+    assert.deepEqual(h.calls, []);
+    assert.deepEqual(h.reactions, ["❌"]);
+
+    t.mock.method(getBrowserControls(), "initialize", async () => { h.calls.push("browser"); });
+    await dispatch(h.message("!join"));
+    assert.deepEqual(h.calls, ["browser", "join", "session", "direct"]);
+    assert.deepEqual(h.reactions, ["❌", "✅"]);
+    assert.equal(h.replies.length, 1);
+    assert.match(h.replies[0], /H264 \+ browser audio/);
+});
 
 test("!stable explicitly retains the older capture/transcoding path", async t => {
     const h = harness(t);

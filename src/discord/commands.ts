@@ -164,12 +164,11 @@ async function handleJoin(message: Message): Promise<void> {
         return;
     }
 
-    // Join voice first
-    await streamingService.joinVoice(message.guild!.id, voiceChannel.id);
-
-    // Initialize browser
+    // Prepare the browser before joining so a startup failure leaves the command retryable.
     const controls = getBrowserControls();
     await controls.initialize();
+
+    await streamingService.joinVoice(message.guild!.id, voiceChannel.id);
 
     // Create session
     streamingService.createSession(message.guild!.id, voiceChannel.id, message.author.id);
