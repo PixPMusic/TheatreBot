@@ -5,6 +5,9 @@ import logger from "../utils/logger.js";
 import type { NavigationKey, BrowserAction, Preset, DEFAULT_PRESETS } from "../types/index.js";
 
 let driver: WebDriver | null = null;
+let initialization: { cancelled: boolean } | null = null;
+let initializing: Promise<WebDriver> | null = null;
+let closing: Promise<void> | null = null;
 
 /**
  * Map our NavigationKey type to Selenium Key values.
@@ -82,39 +85,70 @@ function getChromeOptions(): chrome.Options {
 /**
  * Initialize the Selenium WebDriver with Chrome.
  */
-export async function initDriver(): Promise<WebDriver> {
+export function initDriver(): Promise<WebDriver> {
+    // Wait for disposal before allowing a replacement browser to start.
+    if (closing) {
+        return closing.then(() => initDriver());
+    }
     if (driver) {
-        return driver;
+        return Promise.resolve(driver);
+    }
+    if (initializing) {
+        return initializing;
     }
 
-    logger.info(`Initializing Chrome WebDriver on display ${config.browser.display}`);
-    logger.info(`Default URL: ${config.browser.defaultUrl}`);
-    logger.info(`User Agent: ${config.browser.userAgent}`);
+    const attempt = { cancelled: false };
+    initialization = attempt;
+    // Defer work so the shared promise is installed before any build can start.
+    initializing = Promise.resolve().then(async () => {
+        let candidate: WebDriver | null = null;
+        try {
+            if (attempt.cancelled) {
+                throw new Error("WebDriver initialization cancelled by closeDriver");
+            }
 
-    const options = getChromeOptions();
-    
-    // Set chromedriver path for Fedora
-    const chromedriverPath = process.env.CHROMEDRIVER_PATH || "/usr/lib64/chromium-browser/chromedriver";
-    const service = new chrome.ServiceBuilder(chromedriverPath);
+            logger.info(`Initializing Chrome WebDriver on display ${config.browser.display}`);
+            logger.info(`Default URL: ${config.browser.defaultUrl}`);
+            logger.info(`User Agent: ${config.browser.userAgent}`);
 
-    try {
-        driver = await new Builder()
-            .forBrowser(Browser.CHROME)
-            .setChromeOptions(options)
-            .setChromeService(service)
-            .build();
+            const options = getChromeOptions();
+            const chromedriverPath = process.env.CHROMEDRIVER_PATH || "/usr/lib64/chromium-browser/chromedriver";
+            const service = new chrome.ServiceBuilder(chromedriverPath);
+            candidate = await new Builder()
+                .forBrowser(Browser.CHROME)
+                .setChromeOptions(options)
+                .setChromeService(service)
+                .build();
 
-        logger.info("Chrome WebDriver built successfully");
+            if (attempt.cancelled) {
+                throw new Error("WebDriver initialization cancelled by closeDriver");
+            }
+            logger.info("Chrome WebDriver built successfully");
 
-        // Navigate to the default URL
-        await driver.get(config.browser.defaultUrl);
-        logger.info(`Chrome navigated to ${config.browser.defaultUrl}`);
-    } catch (error) {
-        logger.error("Failed to initialize Chrome WebDriver:", error);
-        throw error;
-    }
+            await candidate.get(config.browser.defaultUrl);
+            if (attempt.cancelled) {
+                throw new Error("WebDriver initialization cancelled by closeDriver");
+            }
+            logger.info(`Chrome navigated to ${config.browser.defaultUrl}`);
+            driver = candidate;
+            return candidate;
+        } catch (error) {
+            if (candidate) {
+                try {
+                    await candidate.quit();
+                } catch (cleanupError) {
+                    logger.error("Failed to close uninitialized Chrome WebDriver:", cleanupError);
+                }
+            }
+            logger.error("Failed to initialize Chrome WebDriver:", error);
+            throw error;
+        }
+    }).finally(() => {
+        initialization = null;
+        initializing = null;
+    });
 
-    return driver;
+    return initializing;
 }
 
 /**
@@ -264,10 +298,31 @@ export async function focusAndType(selector: string, text: string): Promise<void
 /**
  * Close the browser.
  */
-export async function closeDriver(): Promise<void> {
-    if (driver) {
-        await driver.quit();
-        driver = null;
-        logger.info("Chrome WebDriver closed");
+export function closeDriver(): Promise<void> {
+    if (closing) {
+        return closing;
     }
+    if (!driver && !initializing) {
+        return Promise.resolve();
+    }
+
+    if (initialization) {
+        initialization.cancelled = true;
+    }
+    const pending = initializing;
+    const ready = driver;
+    driver = null;
+    closing = Promise.resolve().then(async () => {
+        if (pending) {
+            // Initialization owns disposal of its candidate, including failures.
+            await pending.catch(() => {});
+        }
+        if (ready) {
+            await ready.quit();
+            logger.info("Chrome WebDriver closed");
+        }
+    }).finally(() => {
+        closing = null;
+    });
+    return closing;
 }
