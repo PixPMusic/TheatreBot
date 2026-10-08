@@ -68,13 +68,14 @@ npm test
 
 | Command | Behavior |
 | ------- | -------- |
-| `!join` | Stable capture: MPEG-2/PCM Matroska, then v7 transcodes to the configured video codec and Opus in NUT. |
-| `!beta` | Experimental capture: one H264 encode plus real browser audio encoded as Opus in NUT; v7 handles demuxing, WebRTC packetization, and DAVE. |
+| `!join` | Default capture: one H264 encode plus real browser audio encoded as Opus in NUT; v7 handles demuxing, WebRTC packetization, and DAVE. |
+| `!beta` | Alias for `!join`, retained for existing commands. |
+| `!stable` | Older capture path: MPEG-2/PCM Matroska, then v7 transcodes to the configured video codec and Opus in NUT. |
 | `!leave` | Stop capture/playback and leave the voice channel. |
 | `!url <url>` / `!goto <url>` | Navigate the streaming browser. |
 | `!help` | Show command help. |
 
-Both modes use v7 Go Live playback with stream previews disabled. `!beta` always uses H264; the configured dimensions, frame rate, bitrates, and H26x preset still apply. Use `!leave` before switching modes. The bot automatically leaves an empty channel.
+Both modes use v7 Go Live playback with stream previews disabled. The default `!join` mode (and its `!beta` alias) always uses H264; the configured dimensions, frame rate, bitrates, and H26x preset still apply. Use `!stable` for the older transcoding path, including configured H265/VP8 output. Use `!leave` before switching modes. The bot automatically leaves an empty channel.
 
 ## RBAC Permissions
 

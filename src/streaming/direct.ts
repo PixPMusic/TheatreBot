@@ -64,7 +64,7 @@ export class DirectStreamService {
         // Attach immediately, including when the voice service refuses the source.
         completion.catch(() => {});
         process.stderr?.on("data", (data: Buffer) => logger.debug(`FFmpeg: ${data.toString().trim()}`));
-        logger.info("Starting beta H264/Opus NUT capture");
+        logger.info("Starting direct H264/Opus NUT capture");
         try {
             await streamingService.startEncodedStream(process.stdout as Readable, completion, stop);
         } finally {
@@ -84,7 +84,7 @@ export class DirectStreamService {
 }
 
 let directStreamService: DirectStreamService | null = null;
-/** Return the shared beta capture service used by Discord commands. */
+/** Return the shared direct capture service used by Discord commands. */
 export function getDirectStreamService(): DirectStreamService {
     return directStreamService ??= new DirectStreamService();
 }
