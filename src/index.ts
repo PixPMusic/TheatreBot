@@ -3,7 +3,7 @@ import logger from "./utils/logger.js";
 import { login, getClient } from "./discord/client.js";
 import { initStreamingService } from "./discord/streaming.js";
 import { setupCommands } from "./discord/commands.js";
-import { validateProfileRoot } from "./browser/profiles.js";
+import { prepareProfileRoot } from "./browser/profiles.js";
 import { streamClaims } from "./server/claims.js";
 import { startServer, stopServer, validateServerConfiguration } from "./server/index.js";
 import { loadPermissionsFile } from "./rbac/permissions.js";
@@ -29,8 +29,8 @@ async function main(): Promise<void> {
         // Fail before Discord login if an explicitly configured policy is invalid.
         loadPermissionsFile(config.permissionsFile);
         validateServerConfiguration();
-        validateProfileRoot(config.browser.profileRoot);
         if (process.platform !== "linux") throw new Error("Personal browser profiles require Linux process verification; run the container on other hosts");
+        await prepareProfileRoot(config.browser.profileRoot);
         // 1. Login to Discord
         await login();
         const client = getClient();

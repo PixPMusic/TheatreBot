@@ -5,6 +5,7 @@ services:
       dockerfile: Containerfile
     container_name: theatre-bot
     restart: unless-stopped
+    stop_grace_period: 30s
     
     # Environment from .env file
     env_file:

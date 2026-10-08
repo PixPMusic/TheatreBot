@@ -1,4 +1,6 @@
 import { constants } from "node:fs";
+import fs from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { lstat, mkdir, realpath, chmod, open, unlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -16,20 +18,45 @@ export function validateProfileRoot(root: string): string {
     return resolved;
 }
 
+/** Prepare only the private root; do not inspect or remove profiles or existing leases. */
+export async function prepareProfileRoot(root: string): Promise<string> {
+    let probe: { file: string; ino: number; dev: number } | undefined;
+    try {
+        const resolved = validateProfileRoot(root);
+        // Reject symlinks in every existing component, including ancestors of the root.
+        let current = path.parse(resolved).root;
+        for (const component of resolved.slice(current.length).split(path.sep)) {
+            current = path.join(current, component);
+            try { if ((await lstat(current)).isSymbolicLink()) throw new Error("Profile paths must not contain symlinks"); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        }
+        await mkdir(resolved, { recursive: true, mode: 0o700 });
+        if (await realpath(resolved) !== resolved) throw new Error("Profile root escaped its configured path");
+        await chmod(resolved, 0o700);
+        const file = path.join(resolved, `.theatrebot-write-probe-${randomBytes(16).toString("hex")}`);
+        const handle = await fs.open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+        try {
+            const identity = await handle.stat();
+            probe = { file, ino: identity.ino, dev: identity.dev };
+            await handle.writeFile("profile-root-writability-check");
+        } finally { await handle.close(); }
+        await fs.unlink(file);
+        probe = undefined;
+        return resolved;
+    } catch (error) {
+        // Clean up only this attempt's unique probe, and only while its inode still matches.
+        if (probe) {
+            const entry = await lstat(probe.file).catch(() => undefined);
+            if (entry?.ino === probe.ino && entry.dev === probe.dev) await fs.unlink(probe.file).catch(() => {});
+        }
+        throw new Error(`Cannot prepare BROWSER_PROFILE_ROOT ${JSON.stringify(root)}: ${error instanceof Error ? error.message : String(error)}. Configure a private directory owned by the bot's OS user on writable persistent storage.`, { cause: error });
+    }
+}
+
 /** Private owner directories and an exclusive on-disk lease; never import a shared profile. */
 export async function acquireProfile(root: string, owner: string): Promise<ProfileLease> {
     if (!/^\d{1,20}$/.test(owner)) throw new Error("Invalid Discord profile owner");
-    const resolved = validateProfileRoot(root);
-    // Reject symlinks in every existing component, including ancestors of the root.
-    let current = path.parse(resolved).root;
-    for (const component of resolved.slice(current.length).split(path.sep)) {
-        current = path.join(current, component);
-        try { if ((await lstat(current)).isSymbolicLink()) throw new Error("Profile paths must not contain symlinks"); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    }
-    await mkdir(resolved, { recursive: true, mode: 0o700 });
-    if (await realpath(resolved) !== resolved) throw new Error("Profile root escaped its configured path");
-    await chmod(resolved, 0o700);
+    const resolved = await prepareProfileRoot(root);
     const directory = path.join(resolved, owner);
     await mkdir(directory, { mode: 0o700 }).catch(error => {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
