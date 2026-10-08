@@ -7,6 +7,7 @@ import { getBrowserControls } from "./browser/controls.js";
 import { getCaptureService } from "./browser/capture.js";
 import { startServer, stopServer, validateServerConfiguration } from "./server/index.js";
 import { loadPermissionsFile } from "./rbac/permissions.js";
+import { resolveBrowserExtensions, validateExtensionBrowser } from "./browser/extensions.js";
 
 /**
  * Theatre Bot - Main Entry Point
@@ -29,6 +30,8 @@ async function main(): Promise<void> {
         // Fail before Discord login if an explicitly configured policy is invalid.
         loadPermissionsFile(config.permissionsFile);
         validateServerConfiguration();
+        validateExtensionBrowser(resolveBrowserExtensions(config.browser.extensionPaths),
+            process.env.CHROME_BIN || "/usr/lib64/chromium-browser/chromium-browser");
         // 1. Login to Discord
         await login();
         const client = getClient();

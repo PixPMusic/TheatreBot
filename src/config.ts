@@ -82,6 +82,7 @@ const config = {
     // Chrome/Selenium settings
     browser: {
         display: parseString(process.env.DISPLAY, ":99"),
+        extensionPaths: process.env.BROWSER_EXTENSION_PATHS || "",
         defaultUrl: parseString(process.env.DEFAULT_URL, "https://youtube.com/tv"),
         userAgent: parseString(process.env.USER_AGENT, "Mozilla/5.0 (SMART-TV; LINUX; Tizen 7.0) AppleWebKit/537.36 (KHTML, like Gecko) 94.0.4606.31/7.0 TV Safari/537.36"),
     },

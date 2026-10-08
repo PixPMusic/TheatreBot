@@ -101,6 +101,11 @@ With a manual container launch, pass `-v "$PWD/permissions.json:/app/permissions
 
 ## Container Deployment
 
+Optional local Manifest V3 extensions are disabled by default. See
+[browser extension setup](docs/BROWSER_EXTENSIONS.md) for pinned official
+SponsorBlock and optional uBlock Origin Lite assets, read-only mounts, profile
+settings, and the separate YouTube TV support limitation.
+
 > ⚠️ **Note**: Browser capture requires Linux with X11/Xvfb and PulseAudio. Use the container on macOS/Windows. Native dependency installation and live Discord streaming must be verified on the target platform.
 
 ### With Podman/Docker Compose

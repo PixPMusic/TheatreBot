@@ -5,6 +5,7 @@ import logger from "../utils/logger.js";
 import type { NavigationKey, BrowserAction, Preset, DEFAULT_PRESETS } from "../types/index.js";
 
 import { validateNavigationUrl } from "./url.js";
+import { resolveBrowserExtensions, validateExtensionBrowser } from "./extensions.js";
 
 let driver: WebDriver | null = null;
 // Own a browser while quit is pending, without exposing an unusable session.
@@ -31,7 +32,7 @@ const KEY_MAP: Record<NavigationKey, string> = {
 /**
  * Get Chrome options for the browser.
  */
-function getChromeOptions(): chrome.Options {
+export function getChromeOptions(extensionPaths: readonly string[] = resolveBrowserExtensions(config.browser.extensionPaths)): chrome.Options {
     const options = new chrome.Options();
 
     // Set Chromium binary path (for container with Chromium from Fedora repos)
@@ -60,8 +61,7 @@ function getChromeOptions(): chrome.Options {
         "--kiosk",
         "--start-fullscreen",
         
-        // Disable extensions and infobars
-        "--disable-extensions",
+        // Suppress infobars
         "--disable-infobars",
         "--disable-translate",
         "--disable-popup-blocking",
@@ -76,7 +76,17 @@ function getChromeOptions(): chrome.Options {
     );
 
     // Hide "Chrome is being controlled by automated test software"
-    options.excludeSwitches("enable-automation");
+    if (extensionPaths.length) {
+        options.addArguments(
+            `--load-extension=${extensionPaths.join(",")}`,
+            `--disable-extensions-except=${extensionPaths.join(",")}`,
+        );
+        // ChromeDriver can otherwise add a disabling switch of its own.
+        options.excludeSwitches("enable-automation", "disable-extensions");
+    } else {
+        options.addArguments("--disable-extensions");
+        options.excludeSwitches("enable-automation");
+    }
     options.setUserPreferences({
         "useAutomationExtension": false,
         "credentials_enable_service": false,
@@ -117,6 +127,8 @@ export function initDriver(): Promise<WebDriver> {
 
             const defaultUrl = validateNavigationUrl(config.browser.defaultUrl);
             const options = getChromeOptions();
+            validateExtensionBrowser(resolveBrowserExtensions(config.browser.extensionPaths),
+                process.env.CHROME_BIN || "/usr/lib64/chromium-browser/chromium-browser");
             const chromedriverPath = process.env.CHROMEDRIVER_PATH || "/usr/lib64/chromium-browser/chromedriver";
             const service = new chrome.ServiceBuilder(chromedriverPath);
             candidate = await new Builder()

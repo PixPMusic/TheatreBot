@@ -6,3 +6,9 @@ dist
 !.env.example
 *.log
 .DS_Store
+extensions-assets
+extension-downloads
+.cache
+tmp
+profiles
+browser-profiles
