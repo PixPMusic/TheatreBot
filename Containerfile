@@ -71,3 +71,6 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
+
+# Listen inside the container; Compose keeps the published port on loopback by default.
+ENV SERVER_HOST=0.0.0.0

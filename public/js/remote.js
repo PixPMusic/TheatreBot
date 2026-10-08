@@ -6,6 +6,12 @@
 let socket = null;
 let currentPreset = null;
 let presets = [];
+let csrf = null;
+let capabilities = { control: false, navigate: false };
+const authMessage = document.getElementById('auth-message');
+const loginLink = document.getElementById('login-link');
+const logoutBtn = document.getElementById('logout-btn');
+const controls = document.getElementById('controls');
 
 // DOM Elements
 const statusDot = document.querySelector('.status-dot');
@@ -26,22 +32,81 @@ const sessionInfo = document.getElementById('session-info');
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
-    // Connect to Socket.IO
-    connectSocket();
-    
-    // Load presets
-    await loadPresets();
-    
-    // Setup event listeners
     setupEventListeners();
-    
-    // Load initial status
-    await loadStatus();
+    logoutBtn.addEventListener('click', async () => {
+        try {
+            await api('/auth/logout', { method: 'POST' });
+            signedOut('Signed out. Sign in with Discord to control a stream.');
+        } catch (error) { authMessage.textContent = error.message; }
+    });
+    await updateAccess();
+    setInterval(updateAccess, 10000);
+}
+
+function signedOut(message) {
+    csrf = null;
+    capabilities = { control: false, navigate: false };
+    if (socket) { socket.disconnect(); socket = null; }
+    controls.inert = true;
+    loginLink.hidden = false;
+    logoutBtn.hidden = true;
+    authMessage.textContent = message;
+    urlDisplay.value = '';
+    sessionInfo.textContent = 'None';
+    presetGrid.replaceChildren();
+    statusText.textContent = 'Sign in required';
+    statusDot.classList.remove('connected');
+    statusDot.classList.add('disconnected');
+}
+
+async function api(path, options = {}) {
+    const headers = { ...(options.headers || {}) };
+    if (options.method === 'POST') headers['X-CSRF-Token'] = csrf;
+    const response = await fetch(path, { ...options, headers });
+    if (response.status === 401) signedOut('Your login expired. Sign in with Discord again.');
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Request failed');
+    }
+    return response;
+}
+
+async function updateAccess() {
+    try {
+        const response = await fetch('/api/auth/session');
+        if (!response.ok) throw new Error('Unable to check Discord login');
+        const data = await response.json();
+        if (!data.authenticated) { signedOut('Sign in with Discord to control a stream.'); return; }
+        csrf = data.csrf;
+        capabilities = data.capabilities;
+        loginLink.hidden = true;
+        logoutBtn.hidden = false;
+        authMessage.textContent = data.accessError || `Signed in as ${data.user.username}`;
+        controls.inert = !capabilities.control && !capabilities.navigate;
+        document.querySelectorAll('[data-key], #search-btn, #refresh-btn, #back-history-btn, .preset-btn').forEach(button => { button.disabled = !capabilities.control; });
+        goBtn.disabled = !capabilities.navigate;
+        urlInput.disabled = !capabilities.navigate;
+        if (controls.inert) {
+            if (socket) { socket.disconnect(); socket = null; }
+            urlDisplay.value = ''; sessionInfo.textContent = 'None';
+            statusText.textContent = data.accessStatus === 503 ? 'Verification delayed' : 'Permission required';
+            statusDot.classList.remove('connected');
+            statusDot.classList.add('disconnected');
+            return;
+        }
+        if (!socket) connectSocket();
+        await loadPresets();
+        await loadStatus();
+    } catch (error) {
+        controls.inert = true;
+        if (socket) { socket.disconnect(); socket = null; }
+        authMessage.textContent = error.message;
+    }
 }
 
 // Socket.IO Connection
 function connectSocket() {
-    socket = io();
+    socket = io({ auth: { csrf } });
     
     socket.on('connect', () => {
         statusDot.classList.remove('disconnected');
@@ -64,15 +129,14 @@ function connectSocket() {
         setActivePreset(preset);
     });
     
-    socket.on('error', ({ message }) => {
-        console.error('Socket error:', message);
-    });
+    socket.on('error', ({ message }) => { authMessage.textContent = message; updateAccess(); });
+    socket.on('connect_error', error => { authMessage.textContent = error.message; });
 }
 
 // Load status from API
 async function loadStatus() {
     try {
-        const response = await fetch('/api/status');
+        const response = await api('/api/status');
         const data = await response.json();
         
         if (data.browser?.currentUrl) {
@@ -92,7 +156,7 @@ async function loadStatus() {
 // Load presets from API
 async function loadPresets() {
     try {
-        const response = await fetch('/api/presets');
+        const response = await api('/api/presets');
         presets = await response.json();
         renderPresets();
     } catch (error) {
@@ -108,13 +172,17 @@ async function loadPresets() {
 
 // Render presets
 function renderPresets() {
-    presetGrid.innerHTML = presets.map(preset => `
-        <button class="preset-btn" data-preset-id="${preset.id}">
-            <span class="icon">${preset.icon || '🔗'}</span>
-            <span>${preset.name}</span>
-        </button>
-    `).join('');
-    
+    presetGrid.replaceChildren(...presets.map(preset => {
+        const button = document.createElement('button');
+        button.className = 'preset-btn';
+        button.dataset.presetId = preset.id;
+        button.disabled = !capabilities.control;
+        const icon = document.createElement('span'); icon.className = 'icon'; icon.textContent = preset.icon || '🔗';
+        const label = document.createElement('span'); label.textContent = preset.name;
+        button.append(icon, label);
+        return button;
+    }));
+
     // Add click handlers
     presetGrid.querySelectorAll('.preset-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -157,7 +225,7 @@ function setActivePreset(preset) {
 // Navigate to preset
 async function navigateToPreset(presetId) {
     try {
-        socket.emit('preset', presetId);
+        if (capabilities.control && socket?.connected) socket.emit('preset', presetId);
     } catch (error) {
         console.error('Failed to navigate to preset:', error);
     }
@@ -214,6 +282,7 @@ function setupEventListeners() {
 
 // Send key to browser
 function sendKey(key) {
+    if (!capabilities.control || !socket?.connected) return;
     socket.emit('key', key);
     
     // Visual feedback
@@ -232,29 +301,29 @@ function navigate(url) {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
         url = 'https://' + url;
     }
-    socket.emit('navigate', url);
+    if (capabilities.navigate && socket?.connected) socket.emit('navigate', url);
 }
 
 // Search
 function search(query, submit = false) {
-    socket.emit('search', { query, submit });
+    if (capabilities.control && socket?.connected) socket.emit('search', { query, submit });
 }
 
 // Refresh page
 async function refresh() {
     try {
-        await fetch('/api/refresh', { method: 'POST' });
+        await api('/api/refresh', { method: 'POST' });
     } catch (error) {
-        console.error('Refresh failed:', error);
+        authMessage.textContent = error.message;
     }
 }
 
 // Go back in history
 async function goBack() {
     try {
-        await fetch('/api/back', { method: 'POST' });
+        await api('/api/back', { method: 'POST' });
     } catch (error) {
-        console.error('Back failed:', error);
+        authMessage.textContent = error.message;
     }
 }
 
