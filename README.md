@@ -79,14 +79,25 @@ Both modes use v7 Go Live playback with stream previews disabled. The default `!
 
 ## RBAC Permissions
 
-| Level      | Capabilities                                                       |
-| ---------- | ------------------------------------------------------------------ |
-| `join`     | Request bot to join your call, control sessions you started        |
-| `control`  | Use remote navigation + presets on any session you're connected to |
-| `navigate` | Update the URL to any page instead of presets                      |
-| `admin`    | Configure permissions via slash commands                           |
+Discord commands use an optional JSON permissions file. Without a configured file, only server owners and members with Discord Administrator permission can start, stop, or navigate streams. Help remains public. Grants are scoped to the server; stopping or navigating also requires membership in the active stream's voice channel, including for administrators.
 
-Server owners and administrators automatically have `admin` permissions.
+| Level | Capabilities |
+| ----- | ------------ |
+| `join` | Start streams with `!join`, `!beta`, or `!stable`; stop sessions you started while you still have join permission. |
+| `control` | Stop the active session with `!leave`. |
+| `navigate` | Change the URL with `!url` or `!goto`. |
+| `admin` | Use all three capabilities within the same server and active voice channel. |
+
+Copy `permissions.example.json` to `permissions.json`, replace its example guild ID with your server ID, and add role or user IDs to the appropriate arrays. Discord Developer Mode exposes **Copy ID** for servers, roles, and users. Set `PERMISSIONS_FILE=./permissions.json` in `.env`, then restart the bot. IDs must be strings, and each guild entry accepts only `join`, `control`, `navigate`, and `admin` arrays; omitted levels have no grants. A configured file that cannot be read or contains invalid JSON/schema prevents startup with an actionable error. There is no `/permissions` slash command.
+
+For a container, the path must exist inside the container. Set `PERMISSIONS_FILE=/app/permissions.json` in `.env` and add a read-only mount under the `theatre-bot` service in `compose.yaml`:
+
+```yaml
+volumes:
+  - ./permissions.json:/app/permissions.json:ro
+```
+
+With a manual container launch, pass `-v "$PWD/permissions.json:/app/permissions.json:ro"` alongside `--env-file .env`. On SELinux hosts, use `:ro,Z` for the mount label. Restart after changing permissions.
 
 ## Container Deployment
 

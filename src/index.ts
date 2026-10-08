@@ -6,6 +6,7 @@ import { setupCommands } from "./discord/commands.js";
 import { getBrowserControls } from "./browser/controls.js";
 import { getCaptureService } from "./browser/capture.js";
 import { startServer, stopServer } from "./server/index.js";
+import { loadPermissionsFile } from "./rbac/permissions.js";
 
 /**
  * Theatre Bot - Main Entry Point
@@ -25,6 +26,8 @@ async function main(): Promise<void> {
     }
 
     try {
+        // Fail before Discord login if an explicitly configured policy is invalid.
+        loadPermissionsFile(config.permissionsFile);
         // 1. Login to Discord
         await login();
         const client = getClient();
