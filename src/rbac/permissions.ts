@@ -1,4 +1,4 @@
-import type { GuildMember, Guild } from "discord.js-selfbot-v13";
+import type { GuildMember, Guild } from "@lng2004/discord.js-selfbot-v13";
 import type { PermissionLevel, ServerPermissions, Session } from "../types/index.js";
 import logger from "../utils/logger.js";
 

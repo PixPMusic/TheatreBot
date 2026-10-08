@@ -1,4 +1,4 @@
-import type { Message, VoiceState, VoiceChannel, StageChannel, GuildMember } from "discord.js-selfbot-v13";
+import type { Message, VoiceState, VoiceChannel, StageChannel } from "@lng2004/discord.js-selfbot-v13";
 import { getClient } from "./client.js";
 import { getStreamingService } from "./streaming.js";
 import { getBrowserControls } from "../browser/controls.js";
@@ -32,10 +32,11 @@ export function setupCommands(): void {
         try {
             switch (command) {
                 case "join":
+                case "beta":
                     await handleJoin(message);
                     break;
-                case "beta":
-                    await handleBeta(message);
+                case "stable":
+                    await handleStable(message);
                     break;
                 case "leave":
                     await handleLeave(message);
@@ -68,7 +69,7 @@ export function setupCommands(): void {
     });
 
     logger.info("Discord commands initialized");
-    logger.info("Commands: !join, !leave, !url <url>, !help");
+    logger.info("Commands: !join, !beta (alias), !stable, !leave, !url <url>, !help");
 }
 
 import { getCaptureService } from "../browser/capture.js";
@@ -76,10 +77,9 @@ import { getCaptureService } from "../browser/capture.js";
 // ... existing imports
 
 /**
- * Handle !join command - joins the sender's current voice channel.
- * Uses the STABLE but slow CaptureService (MPEG-2 -> Library FFmpeg).
+ * Handle !stable command using the older MPEG-2/PCM capture and transcoding path.
  */
-async function handleJoin(message: Message): Promise<void> {
+async function handleStable(message: Message): Promise<void> {
     const client = getClient();
     const streamingService = getStreamingService();
     
@@ -109,7 +109,7 @@ async function handleJoin(message: Message): Promise<void> {
         return;
     }
 
-    logger.info(`Join requested by ${message.author.tag} for channel ${channelName}`);
+    logger.info(`Stable stream requested by ${message.author.tag} for channel ${channelName}`);
 
     // Create session and join
     const session = streamingService.createSession(
@@ -129,7 +129,7 @@ async function handleJoin(message: Message): Promise<void> {
     const stream = captureService.startCapture();
 
     // Pipe to Discord - Do NOT await this as it blocks until stream ends
-    streamingService.startStream(stream).catch(e => {
+    streamingService.startStream(stream, () => captureService.stopCapture()).catch(e => {
         logger.error("Stable stream error:", e);
         // Only try to reply if message is recent enough, otherwise just log
         message.channel.send(`❌ Stream error: ${e.message}`).catch(() => {});
@@ -140,10 +140,9 @@ async function handleJoin(message: Message): Promise<void> {
 }
 
 /**
- * Handle !beta command - experimental direct streaming.
- * Uses DirectStreamService (Raw H.264 -> UDP).
+ * Handle !join and its !beta alias with direct H264/Opus capture over v7 WebRTC/DAVE.
  */
-async function handleBeta(message: Message): Promise<void> {
+async function handleJoin(message: Message): Promise<void> {
     const client = getClient();
     const streamingService = getStreamingService();
     
@@ -165,25 +164,24 @@ async function handleBeta(message: Message): Promise<void> {
         return;
     }
 
-    // Join voice first
-    await streamingService.joinVoice(message.guild!.id, voiceChannel.id);
-
-    // Initialize browser
+    // Prepare the browser before joining so a startup failure leaves the command retryable.
     const controls = getBrowserControls();
     await controls.initialize();
+
+    await streamingService.joinVoice(message.guild!.id, voiceChannel.id);
 
     // Create session
     streamingService.createSession(message.guild!.id, voiceChannel.id, message.author.id);
 
-    // Get MediaUdp
-    const mediaUdp = await streamingService.createMediaUdp();
-
-    // Start Direct Stream
+    // Playback runs until EOF/stop, so observe failures without blocking !leave.
     const directStream = getDirectStreamService();
-    await directStream.startStream(mediaUdp);
+    directStream.startStream(streamingService).catch(error => {
+        logger.error("Direct stream error:", error);
+        message.channel.send(`❌ Stream error: ${error.message}`).catch(() => {});
+    });
 
-    await message.reply(`🧪 Beta Stream started in **${channelName}** (Direct RTP v3)`);
-    logger.info(`Started beta stream in ${channelName}`);
+    await message.reply(`📺 Now streaming in **${channelName}** (H264 + browser audio)`);
+    logger.info(`Started direct stream in ${channelName}`);
 }
 
 /**
@@ -204,7 +202,7 @@ async function handleLeave(message: Message): Promise<void> {
 
     logger.info(`Leave requested by ${message.author.tag}`);
 
-    // Stop Direct Stream (if beta)
+    // Stop direct capture (the default mode)
     const directStream = getDirectStreamService();
     directStream.stopStream();
 
@@ -252,7 +250,9 @@ async function handleUrl(message: Message, args: string[]): Promise<void> {
 async function handleHelp(message: Message): Promise<void> {
     await message.reply(`
 **Theatre Bot Commands**
-\`!join\` - Join your voice channel and start streaming
+\`!join\` - Join and stream with a single H264 encode and browser audio (default)
+\`!beta\` - Alias for \`!join\`
+\`!stable\` - Join using the older MPEG-2/PCM capture and transcoding path
 \`!leave\` - Leave the voice channel
 \`!url <url>\` - Navigate to a URL
 \`!help\` - Show this help

@@ -41,7 +41,8 @@ RUN ARCH=$(uname -m) \
     && chmod +x /usr/bin/ffmpeg /usr/bin/ffprobe
 
 # Install Node.js and NPM
-RUN microdnf install -y nodejs npm && microdnf clean all
+RUN microdnf install -y nodejs npm && microdnf clean all \
+    && node -e "const [major, minor] = process.versions.node.split('.').map(Number); if (major < 22 || (major === 22 && minor < 4)) throw new Error('Node.js >=22.4.0 is required');"
 
 # Create app directory
 WORKDIR /app

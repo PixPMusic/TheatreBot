@@ -33,7 +33,7 @@ export class CaptureService {
         }
 
         const display = config.browser.display;
-        const { width, height, fps, bitrateKbps, maxBitrateKbps, h26xPreset } = config.stream;
+        const { width, height, fps } = config.stream;
 
         logger.info(`Starting X11 capture on ${display} at ${width}x${height}@${fps}fps`);
 
@@ -57,12 +57,8 @@ export class CaptureService {
             "-draw_mouse", "0",
             "-i", `${display}+0,0`,
             
-            // Video input options
-            "-thread_queue_size", "1024", // Prevent buffer underruns
-
             // Audio input: PulseAudio
             "-f", "pulse",
-            "-thread_queue_size", "1024",
             "-i", "default",
             
             // Video encoding - MPEG-2 (Lightweight Intermediate)
@@ -95,34 +91,39 @@ export class CaptureService {
         logger.info(`FFmpeg capture command: ${FFMPEG_PATH} ${args.join(" ")}`);
 
         // Spawn FFmpeg process
-        this.ffmpegProcess = spawn(FFMPEG_PATH, args, {
+        const process = spawn(FFMPEG_PATH, args, {
             stdio: ["ignore", "pipe", "pipe"],
         });
 
+        this.ffmpegProcess = process;
         this.isCapturing = true;
-        this.outputStream = this.ffmpegProcess.stdout as Readable;
+        const output = process.stdout as Readable;
+        this.outputStream = output;
 
-        this.ffmpegProcess.stderr?.on("data", (data: Buffer) => {
+        process.stderr?.on("data", (data: Buffer) => {
             const line = data.toString().trim();
             if (line && !line.startsWith("frame=") && !line.startsWith("size=")) {
                 logger.debug(`FFmpeg: ${line}`);
             }
         });
 
-        this.ffmpegProcess.on("error", (err) => {
+        process.on("error", (err) => {
             logger.error(`FFmpeg process error: ${err.message}`);
-            this.stopCapture();
+            output.destroy(err);
+            if (this.ffmpegProcess === process) this.stopCapture();
         });
 
-        this.ffmpegProcess.on("exit", (code) => {
+        process.on("close", (code) => {
+            if (this.ffmpegProcess !== process) return;
             if (code !== 0 && this.isCapturing) {
-                logger.error(`FFmpeg exited with code ${code}`);
+                output.destroy(new Error(`FFmpeg capture exited with code ${code}`));
             }
+            this.ffmpegProcess = null;
             this.isCapturing = false;
             this.outputStream = null;
         });
 
-        return this.outputStream;
+        return output;
     }
 
     /**
@@ -140,6 +141,7 @@ export class CaptureService {
             this.ffmpegProcess = null;
         }
         
+        this.outputStream?.destroy();
         this.outputStream = null;
         logger.info("Capture stopped");
     }

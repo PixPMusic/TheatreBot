@@ -18,22 +18,27 @@ Very early alpha. Latency is high and the UI is not very user-friendly.
 
 ### Prerequisites
 
-- Node.js 18+
-- Chrome/Chromium
-- FFmpeg
-- Docker/Podman (for production with Xvfb)
+- Node.js 22.4.0 or newer (required by discord-video-stream v7)
+- Linux with X11/Xvfb and PulseAudio for browser screen/audio capture
+- Chrome/Chromium and a matching ChromeDriver
+- FFmpeg with `x11grab`, `pulse`, `libx264`, `libopus`, and the `azmq` filter (`libzmq` enabled); stable H265/VP8 also need `libx265`/`libvpx`
+- Docker/Podman for the bundled Linux deployment
 
 ### Installation
 
 ```bash
-# Install dependencies
-npm install
+# Install locked dependencies, including native install scripts
+npm ci
 
 # Copy environment config
 cp .env.example .env
 
 # Edit .env with your Discord token
 ```
+
+The v7 streaming library uses the `@lng2004/discord.js-selfbot-v13` client and native WebRTC/DAVE and FFmpeg dependencies. Allow dependency install scripts, including `node-av`, `@lng2004/node-datachannel`, and `zeromq`, in package managers that require approval. Installation needs access to native binary downloads; if a prebuilt binary is unavailable for your platform, follow that package's source-build prerequisites. Do not use `--ignore-scripts`.
+
+The container downloads the [BtbN FFmpeg build](https://github.com/BtbN/FFmpeg-Builds) with `libzmq`. If using your own FFmpeg, check `ffmpeg -filters` for `azmq`. Set `FFMPEG_PATH` to override the executable used for both capture and stable transcoding.
 
 ### Discord Token
 
@@ -44,12 +49,12 @@ You need a Discord **user token** (not a bot token). See the [StreamBot wiki](ht
 ### Running
 
 ```bash
-# Development
-npm run start
-
-# With Node.js
+# Compile TypeScript and run
 npm run build
-npm run start:node
+npm start
+
+# Verify the migration contracts and stop/restart lifecycle
+npm test
 ```
 
 ## Usage
@@ -58,6 +63,19 @@ npm run start:node
 2. Start the bot with `npm run start`
 3. Use Discord commands to join a voice channel
 4. Control the browser via the web UI at `http://localhost:8080`
+
+### Discord Commands
+
+| Command | Behavior |
+| ------- | -------- |
+| `!join` | Default capture: one H264 encode plus real browser audio encoded as Opus in NUT; v7 handles demuxing, WebRTC packetization, and DAVE. |
+| `!beta` | Alias for `!join`, retained for existing commands. |
+| `!stable` | Older capture path: MPEG-2/PCM Matroska, then v7 transcodes to the configured video codec and Opus in NUT. |
+| `!leave` | Stop capture/playback and leave the voice channel. |
+| `!url <url>` / `!goto <url>` | Navigate the streaming browser. |
+| `!help` | Show command help. |
+
+Both modes use v7 Go Live playback with stream previews disabled. The default `!join` mode (and its `!beta` alias) always uses H264; the configured dimensions, frame rate, bitrates, and H26x preset still apply. Use `!stable` for the older transcoding path, including configured H265/VP8 output. Use `!leave` before switching modes. The bot automatically leaves an empty channel.
 
 ## RBAC Permissions
 
@@ -70,9 +88,9 @@ npm run start:node
 
 Server owners and administrators automatically have `admin` permissions.
 
-## Container Deployment (Required)
+## Container Deployment
 
-> ⚠️ **Note**: This bot requires Linux with Xvfb and PulseAudio. Running directly with `bun` on macOS/Windows won't work.
+> ⚠️ **Note**: Browser capture requires Linux with X11/Xvfb and PulseAudio. Use the container on macOS/Windows. Native dependency installation and live Discord streaming must be verified on the target platform.
 
 ### With Podman/Docker Compose
 
