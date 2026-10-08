@@ -13,7 +13,10 @@ export function validateProfileRoot(root: string): string {
     const resolved = path.resolve(root);
     const application = fileURLToPath(new URL("../../", import.meta.url));
     const relation = path.relative(application, resolved);
-    if (!relation || (!relation.startsWith(`..${path.sep}`) && relation !== '..' && !path.isAbsolute(relation))) throw new Error("BROWSER_PROFILE_ROOT must be outside the application/build context");
+    const applicationInRoot = path.relative(resolved, application);
+    const overlapsApplication = [relation, applicationInRoot].some(relative =>
+        !relative || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)));
+    if (overlapsApplication) throw new Error("BROWSER_PROFILE_ROOT must be outside the application/build context and must not contain it");
     if ([path.parse(resolved).root, os.homedir(), os.tmpdir(), '/var', '/var/lib'].includes(resolved)) throw new Error("BROWSER_PROFILE_ROOT must be a dedicated private directory");
     return resolved;
 }

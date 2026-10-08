@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, realpath, rm, lstat, writeFile, readFile, symlink, mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { acquireProfile } from '../dist/browser/profiles.js';
+import { fileURLToPath } from 'node:url';
+import { acquireProfile, validateProfileRoot } from '../dist/browser/profiles.js';
 const OWNER = '111111111111111111';
 async function fixture(t) { const root = await mkdtemp(path.join(await realpath(os.tmpdir()), 'theatrebot-profiletest-')); t.after(() => rm(root, { recursive: true, force: true })); return root; }
 test('profiles and root are private; exclusive lease release preserves site data', async t => {
@@ -45,7 +46,25 @@ test('failed per-profile acquisition rolls back its newly acquired global lease'
 
 test('profiles cannot be configured inside the build context or at shared filesystem roots', async () => {
     await assert.rejects(acquireProfile(process.cwd() + '/profiles', OWNER), /outside the application/);
-    await assert.rejects(acquireProfile('/', OWNER), /dedicated private directory/);
+    await assert.rejects(acquireProfile('/', OWNER), /outside the application|dedicated private directory/);
+});
+
+test('profile roots reject the application directory and every ancestor', () => {
+    const application = path.resolve(fileURLToPath(new URL('../', import.meta.url)));
+    let root = application;
+    while (true) {
+        assert.throws(() => validateProfileRoot(root), /outside the application/, root);
+        const parent = path.dirname(root);
+        if (parent === root) break;
+        root = parent;
+    }
+});
+
+test('dedicated profile roots outside the app remain valid, including sibling prefixes', () => {
+    const application = path.resolve(fileURLToPath(new URL('../', import.meta.url)));
+    for (const root of [application + '-profiles', path.join(path.dirname(application), 'private-profiles', 'owners')]) {
+        assert.equal(validateProfileRoot(root), root);
+    }
 });
 
 test('startup preparation creates a missing private root without creating profiles or leases', async t => {
